@@ -21,6 +21,7 @@ const dynamodb = new AWS.DynamoDB();
 const WORKSPACE_QUOTATIONS_TABLE = 'workspace_quotations';
 const WORKSPACE_INVOICES_TABLE = 'workspace_invoices';
 const WORKSPACE_CREDIT_NOTES_TABLE = 'workspace_credit_notes';
+const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
 const WORKSPACE_ITEMS_TABLE = 'workspace_items';
 const WORKSPACE_CUSTOMERS_TABLE = 'workspace_customers';
 const WORKSPACE_DELIVERY_CHALLANS_TABLE = 'workspace_delivery_challans';
@@ -129,6 +130,44 @@ const createWorkspaceCreditNotesTable = async () => {
       console.log(`✅ Created table ${WORKSPACE_CREDIT_NOTES_TABLE}`);
       await dynamodb.waitFor('tableExists', { TableName: WORKSPACE_CREDIT_NOTES_TABLE }).promise();
       console.log(`✅ Table ${WORKSPACE_CREDIT_NOTES_TABLE} is now active`);
+    } else {
+      throw error;
+    }
+  }
+};
+
+/**
+ * Create workspace_purchase_orders table
+ * Primary Key: vendorId (Partition Key) + purchaseOrderId (Sort Key)
+ */
+const createWorkspacePurchaseOrdersTable = async () => {
+  const params = {
+    TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
+    KeySchema: [
+      { AttributeName: 'vendorId', KeyType: 'HASH' }, // Partition key
+      { AttributeName: 'purchaseOrderId', KeyType: 'RANGE' } // Sort key
+    ],
+    AttributeDefinitions: [
+      { AttributeName: 'vendorId', AttributeType: 'S' },
+      { AttributeName: 'purchaseOrderId', AttributeType: 'S' }
+    ],
+    ProvisionedThroughput: {
+      ReadCapacityUnits: 5,
+      WriteCapacityUnits: 5
+    }
+  };
+
+  try {
+    await dynamodb.describeTable({ TableName: WORKSPACE_PURCHASE_ORDERS_TABLE }).promise();
+    console.log(`✅ Table ${WORKSPACE_PURCHASE_ORDERS_TABLE} already exists`);
+  } catch (error) {
+    if (error.code === 'ResourceNotFoundException') {
+      await dynamodb.createTable(params).promise();
+      console.log(`✅ Created table ${WORKSPACE_PURCHASE_ORDERS_TABLE}`);
+      await dynamodb
+        .waitFor('tableExists', { TableName: WORKSPACE_PURCHASE_ORDERS_TABLE })
+        .promise();
+      console.log(`✅ Table ${WORKSPACE_PURCHASE_ORDERS_TABLE} is now active`);
     } else {
       throw error;
     }
@@ -288,6 +327,7 @@ const createAllWorkspaceTables = async () => {
     await createWorkspaceQuotationsTable();
     await createWorkspaceInvoicesTable();
     await createWorkspaceCreditNotesTable();
+    await createWorkspacePurchaseOrdersTable();
     await createWorkspaceItemsTable();
     await createWorkspaceCustomersTable();
     await createWorkspaceDeliveryChallansTable();
@@ -300,7 +340,8 @@ const createAllWorkspaceTables = async () => {
     console.log('├─────────────────────────────────────┼─────────────────────────────┤');
     console.log('│ workspace_quotations                │ vendorId + quotationId      │');
     console.log('│ workspace_invoices                  │ vendorId + invoiceId        │');
-    console.log('│ workspace_credit_notes               │ vendorId + creditNoteId     │');
+    console.log('│ workspace_credit_notes              │ vendorId + creditNoteId     │');
+    console.log('│ workspace_purchase_orders           │ vendorId + purchaseOrderId  │');
     console.log('│ workspace_items                     │ vendorId + itemId           │');
     console.log('│ workspace_customers                 │ vendorId + customerId       │');
     console.log('│ workspace_delivery_challans         │ vendorId + challanId        │');

@@ -18,10 +18,12 @@ import {
   getCustomers,
   getCustomerById,
   updateCustomer,
-  searchCustomers
+  searchCustomers,
+  createPurchaseOrderFromQuote
 } from '../controllers/workspaceController.js';
 import { getWorkspaceInvoices, getInvoiceStats } from '../controllers/workspaceInvoicesController.js';
 import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats } from '../controllers/workspaceCreditNotesController.js';
+import { getWorkspacePurchaseOrders } from '../controllers/workspacePurchaseOrdersController.js';
 import { getWorkspaceSubscriptions, getSubscriptionStats, createSubscription, updateSubscription, deleteSubscription, pauseSubscription, resumeSubscription, getSubscriptionHistory, generateSubscriptionInvoice, bulkPauseSubscriptions, bulkResumeSubscriptions } from '../controllers/workspaceSubscriptionsController.js';
 import purchaseRequisitionsRouter from './purchaseRequisitionsRoutes.js';
 import procurementRequestsRouter from './procurementRequestsRoutes.js';
@@ -121,6 +123,26 @@ router.get('/invoices', authenticateUser, getWorkspaceInvoices);
  * @access  Private
  */
 router.get('/invoices/stats', authenticateUser, getInvoiceStats);
+
+/**
+ * ========================================
+ * PURCHASE ORDERS ROUTES
+ * ========================================
+ */
+
+/**
+ * @route   POST /api/workspace/purchase-orders
+ * @desc    Create a new purchase order from a quotation (Vendor only)
+ * @access  Private
+ */
+router.post('/purchase-orders', authenticateUser, requireVendor, createPurchaseOrderFromQuote);
+
+/**
+ * @route   GET /api/workspace/purchase-orders
+ * @desc    Get purchase orders based on user role (Vendor sees own, PM sees all)
+ * @access  Private
+ */
+router.get('/purchase-orders', authenticateUser, getWorkspacePurchaseOrders);
 
 /**
  * ========================================
