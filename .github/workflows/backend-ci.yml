@@ -1,0 +1,108 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - staging-branch
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # If this workflow is in a monorepo, uncomment the next line and adjust path:
+      # - name: Change to backend directory
+      #   run: cd Vendor-Backend
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image repo name
+        id: repo
+        run: echo "REPO=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/vendor-backend" >> $GITHUB_OUTPUT
+
+      - name: Set image repo name (staging)
+        id: repo-staging
+        run: echo "REPO_STAGING=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/vendor-backend-staging" >> $GITHUB_OUTPUT
+
+      - name: Set target env
+        id: target
+        run: |
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "ENV=prod" >> $GITHUB_OUTPUT
+          else
+            echo "ENV=staging" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push image (prod)
+        if: steps.target.outputs.ENV == 'prod'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.repo.outputs.REPO }}:${{ env.IMAGE_TAG }}
+            ${{ steps.repo.outputs.REPO }}:latest
+          platforms: linux/amd64
+
+      - name: Build and push image (staging)
+        if: steps.target.outputs.ENV == 'staging'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.repo-staging.outputs.REPO_STAGING }}:${{ env.IMAGE_TAG }}
+            ${{ steps.repo-staging.outputs.REPO_STAGING }}:latest
+          platforms: linux/amd64
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Deploy to production
+        if: steps.target.outputs.ENV == 'prod'
+        run: |
+          kubectl set image deployment/vendor-backend \
+            vendor-backend=${{ steps.repo.outputs.REPO }}:${{ env.IMAGE_TAG }} \
+            -n vendor
+          kubectl rollout status deployment/vendor-backend -n vendor
+
+      - name: Deploy to staging
+        if: steps.target.outputs.ENV == 'staging'
+        run: |
+          kubectl set image deployment/vendor-backend-staging \
+            vendor-backend-staging=${{ steps.repo-staging.outputs.REPO_STAGING }}:${{ env.IMAGE_TAG }} \
+            -n vendor-staging
+          kubectl rollout status deployment/vendor-backend-staging -n vendor-staging
+
+

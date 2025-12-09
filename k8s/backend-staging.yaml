@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vendor-backend-staging
+  namespace: vendor-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vendor-backend-staging
+  template:
+    metadata:
+      labels:
+        app: vendor-backend-staging
+    spec:
+      containers:
+        - name: vendor-backend
+          image: 286757679229.dkr.ecr.ap-south-1.amazonaws.com/vendor-backend:staging-latest
+          ports:
+            - containerPort: 5001
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          envFrom:
+            - configMapRef:
+                name: vendor-config-staging
+            - secretRef:
+                name: vendor-secrets-staging
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vendor-backend-staging
+  namespace: vendor-staging
+spec:
+  type: ClusterIP
+  selector:
+    app: vendor-backend-staging
+  ports:
+    - port: 5001
+      targetPort: 5001
+
+

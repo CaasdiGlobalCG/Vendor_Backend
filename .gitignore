@@ -1,0 +1,68 @@
+# Node dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Build output
+dist/
+build/
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Caches
+.cache/
+.parcel-cache/
+.eslintcache
+.npm/
+
+# Env files (do not commit secrets)
+.env
+.env.*
+!.env.example
+
+# Local SSL certs
+*.pem
+*.crt
+*.key
+
+# OS/Editor junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+.Spotlight-V100
+.Trashes
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AWS/SAM local artifacts (if used)
+.aws-sam/
+.sam/
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Archives
+*.tgz
+
+# Test output
+jest-html-reporters-attach/

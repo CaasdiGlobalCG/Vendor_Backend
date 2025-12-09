@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vendor-backend
+  namespace: vendor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vendor-backend
+  template:
+    metadata:
+      labels:
+        app: vendor-backend
+    spec:
+      containers:
+        - name: vendor-backend
+          image: 286757679229.dkr.ecr.ap-south-1.amazonaws.com/vendor-backend:latest
+          ports:
+            - containerPort: 5001
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          envFrom:
+            - configMapRef:
+                name: vendor-config
+            - secretRef:
+                name: vendor-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vendor-backend
+  namespace: vendor
+spec:
+  type: ClusterIP
+  selector:
+    app: vendor-backend
+  ports:
+    - port: 5001
+      targetPort: 5001
+
+

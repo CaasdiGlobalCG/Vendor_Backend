@@ -1,0 +1,13 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: .
+    container_name: vendor_backend
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+
+
