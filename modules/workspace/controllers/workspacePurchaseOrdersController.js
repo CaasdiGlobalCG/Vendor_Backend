@@ -13,7 +13,7 @@ const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
  */
 const getWorkspacePurchaseOrders = async (req, res) => {
   try {
-    const { vendorId } = req.query;
+    const { vendorId, status } = req.query;
 
     if (!vendorId) {
       return res.status(400).json({
@@ -22,14 +22,29 @@ const getWorkspacePurchaseOrders = async (req, res) => {
       });
     }
 
-    console.log('📋 Fetching workspace purchase orders for vendor:', vendorId);
+    console.log('📋 Fetching workspace purchase orders for vendor:', vendorId, 'status filter:', status);
+
+    // Base filter: all POs for this vendor
+    let filterExpression = 'vendorId = :vendorId';
+    const expressionAttributeValues = {
+      ':vendorId': { S: vendorId }
+    };
+    const expressionAttributeNames = {};
+
+    // Optional status filter (e.g. "requested for invoice")
+    if (status) {
+      filterExpression += ' AND #status = :status';
+      expressionAttributeNames['#status'] = 'status';
+      expressionAttributeValues[':status'] = { S: status };
+    }
 
     const params = {
       TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'vendorId = :vendorId',
-      ExpressionAttributeValues: {
-        ':vendorId': { S: vendorId }
-      }
+      FilterExpression: filterExpression,
+      ExpressionAttributeValues: expressionAttributeValues,
+      ...(Object.keys(expressionAttributeNames).length > 0 && {
+        ExpressionAttributeNames: expressionAttributeNames
+      })
     };
 
     const command = new ScanCommand(params);
@@ -68,7 +83,12 @@ const getWorkspacePurchaseOrders = async (req, res) => {
         project: po.projectName || po.workspaceName || 'Project',
         vendor: po.vendorName || 'You',
         email: po.vendorEmail || '',
+        // Count for summary display
         items: Array.isArray(po.items) ? po.items.length : 0,
+        // Full items list for conversions (e.g. PO -> Invoice)
+        itemsList: Array.isArray(po.items) ? po.items : [],
+        customerDetails: po.customerDetails || null,
+        customerName: po.customerName || '',
         amount: `₹${Number(rawTotal).toLocaleString('en-IN', {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2

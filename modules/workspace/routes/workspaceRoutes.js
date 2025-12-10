@@ -21,7 +21,7 @@ import {
   searchCustomers,
   createPurchaseOrderFromQuote
 } from '../controllers/workspaceController.js';
-import { getWorkspaceInvoices, getInvoiceStats } from '../controllers/workspaceInvoicesController.js';
+import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus } from '../controllers/workspaceInvoicesController.js';
 import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats } from '../controllers/workspaceCreditNotesController.js';
 import { getWorkspacePurchaseOrders } from '../controllers/workspacePurchaseOrdersController.js';
 import { getWorkspaceSubscriptions, getSubscriptionStats, createSubscription, updateSubscription, deleteSubscription, pauseSubscription, resumeSubscription, getSubscriptionHistory, generateSubscriptionInvoice, bulkPauseSubscriptions, bulkResumeSubscriptions } from '../controllers/workspaceSubscriptionsController.js';
@@ -116,6 +116,13 @@ router.post('/invoices', authenticateUser, requireVendor, createInvoice);
  * @access  Private
  */
 router.get('/invoices', authenticateUser, getWorkspaceInvoices);
+
+/**
+ * @route   PUT /api/workspace/invoices/:invoiceId/status
+ * @desc    Update invoice status (Vendor only)
+ * @access  Private
+ */
+router.put('/invoices/:invoiceId/status', authenticateUser, requireVendor, updateWorkspaceInvoiceStatus);
 
 /**
  * @route   GET /api/workspace/invoices/stats

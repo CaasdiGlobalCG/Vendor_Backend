@@ -27,6 +27,7 @@ import turnkeyWorkflowRoutes from './routes/turnkeyWorkflowRoutes.js';
 import postServiceRoutes from './modules/post-services/routes/postServiceRoutes.js'; // New import for Post Services routes
 import postServiceNotificationRoutes from './modules/post-services/routes/notificationRoutes.js'; // New import for Post Services Notifications routes
 import dashboardRoutes from './routes/dashboard.routes.js';
+import { getWorkspacePurchaseOrders } from './modules/workspace/controllers/workspacePurchaseOrdersController.js';
 
 // Import WebSocket initialization
 import { initWebSocketServer } from './websocket/notificationSocket.js';
@@ -115,6 +116,17 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     modules: ['PM', 'Vendor', 'Workspace']
   });
+});
+
+// Lightweight fallback route for workspace purchase orders
+// This guarantees /api/workspace/purchase-orders exists even if
+// modular workspace routers are not mounted correctly in some envs.
+app.get('/api/workspace/purchase-orders', async (req, res, next) => {
+  try {
+    await getWorkspacePurchaseOrders(req, res);
+  } catch (err) {
+    next(err);
+  }
 });
 
 //s3-bucket

@@ -979,7 +979,19 @@ const createInvoice = async (req, res) => {
       invoiceCode,
       invoiceNo,
       customerDetails,
-      quoteId
+      quoteId,
+      referenceQuoteNumber,
+      referencePoNumber,
+      // Workspace / project metadata (optional)
+      projectId,
+      projectName,
+      workspaceId,
+      workspaceName,
+      taskId,
+      taskName,
+      subtaskId,
+      subtaskName,
+      clientId: clientIdFromBody
     } = req.body;
     const userRole = req.user?.role;
 
@@ -1020,6 +1032,11 @@ const createInvoice = async (req, res) => {
 
     const invoiceId = `INV-${Date.now()}-${uuidv4().slice(0, 8)}`;
     const createdAt = new Date().toISOString();
+
+    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    const projectContext = await getProjectContextForWorkspace(workspaceId);
+    const clientId = clientIdFromBody || projectContext?.clientId || null;
+    const resolvedProjectId = projectContext?.projectId || projectId || null;
 
     // Calculate subtotal from items if not provided
     let calculatedSubtotal = subtotal;
@@ -1080,7 +1097,20 @@ const createInvoice = async (req, res) => {
       igst: calculatedIgst,
       total: calculatedTotal,
       status: status || 'draft',
-      quoteId: quoteId || null, // Reference to original quote if converted from quote
+      // Workspace / project metadata (align with quotations / POs)
+      projectId: resolvedProjectId,
+      projectName: projectName || '',
+      workspaceId: workspaceId || null,
+      workspaceName: workspaceName || '',
+      taskId: taskId || null,
+      taskName: taskName || '',
+      subtaskId: subtaskId || null,
+      subtaskName: subtaskName || '',
+      clientId: clientId || null,
+      // References back to quote / PO
+      quoteId: quoteId || null,
+      referenceQuoteNumber: referenceQuoteNumber || null,
+      referencePoNumber: referencePoNumber || null,
       createdAt,
       updatedAt: createdAt
     };

@@ -2,6 +2,7 @@ import express from 'express';
 import * as dynamoWorkspaceController from '../controllers/dynamoWorkspaceController.js';
 import { getWorkspaceAccessStatus, verifyWorkspaceAccess } from '../controllers/workspaceAccessController.js';
 import { inviteCASMembersToWorkspace } from '../../pm/controllers/pmProjectController.js';
+import { getWorkspacePurchaseOrders } from '../controllers/workspacePurchaseOrdersController.js';
 
 const router = express.Router();
 
@@ -29,6 +30,11 @@ router.put('/workspaces/:workspaceId/permissions', dynamoWorkspaceController.upd
 // Access status and verification
 router.get('/workspace-access/status/:workspaceId', getWorkspaceAccessStatus);
 router.get('/workspace-access/verify/:workspaceId', verifyWorkspaceAccess);
+
+// Purchase orders for a vendor (fallback route under dynamo workspace router)
+// This ensures /api/workspace/purchase-orders works even if workspaceRoutes
+// are not mounted in some environments.
+router.get('/workspace/purchase-orders', getWorkspacePurchaseOrders);
 
 // Create or get workspace for a lead/project
 router.post('/workspaces/lead/:leadId/create-or-get', dynamoWorkspaceController.createOrGetWorkspaceForLead);
