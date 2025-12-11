@@ -3,7 +3,7 @@ name: Backend CI/CD
 on:
   push:
     branches:
-      - main
+      - master
       - staging-branch
   workflow_dispatch:
 
@@ -50,7 +50,7 @@ jobs:
       - name: Set target env
         id: target
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
+          if [[ "${{ github.ref_name }}" == "master" ]]; then
             echo "ENV=prod" >> $GITHUB_OUTPUT
           else
             echo "ENV=staging" >> $GITHUB_OUTPUT
