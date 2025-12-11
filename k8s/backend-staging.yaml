@@ -14,7 +14,7 @@ spec:
         app: vendor-backend-staging
     spec:
       containers:
-        - name: vendor-backend
+        - name: vendor-backend-staging
           image: 286757679229.dkr.ecr.us-east-1.amazonaws.com/vendor-backend:latest
           ports:
             - containerPort: 5001
