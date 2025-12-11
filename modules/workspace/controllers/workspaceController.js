@@ -11,6 +11,7 @@ const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 const WORKSPACE_QUOTATIONS_TABLE = 'workspace_quotations';
 const WORKSPACE_INVOICES_TABLE = 'workspace_invoices';
 const WORKSPACE_CREDIT_NOTES_TABLE = 'workspace_credit_notes';
+const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
 const WORKSPACE_ITEMS_TABLE = 'workspace_items';
 const WORKSPACE_CUSTOMERS_TABLE = 'workspace_customers';
 const WORKSPACE_DELIVERY_CHALLANS_TABLE = 'workspace_delivery_challans';
@@ -978,7 +979,19 @@ const createInvoice = async (req, res) => {
       invoiceCode,
       invoiceNo,
       customerDetails,
-      quoteId
+      quoteId,
+      referenceQuoteNumber,
+      referencePoNumber,
+      // Workspace / project metadata (optional)
+      projectId,
+      projectName,
+      workspaceId,
+      workspaceName,
+      taskId,
+      taskName,
+      subtaskId,
+      subtaskName,
+      clientId: clientIdFromBody
     } = req.body;
     const userRole = req.user?.role;
 
@@ -1019,6 +1032,11 @@ const createInvoice = async (req, res) => {
 
     const invoiceId = `INV-${Date.now()}-${uuidv4().slice(0, 8)}`;
     const createdAt = new Date().toISOString();
+
+    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    const projectContext = await getProjectContextForWorkspace(workspaceId);
+    const clientId = clientIdFromBody || projectContext?.clientId || null;
+    const resolvedProjectId = projectContext?.projectId || projectId || null;
 
     // Calculate subtotal from items if not provided
     let calculatedSubtotal = subtotal;
@@ -1079,7 +1097,20 @@ const createInvoice = async (req, res) => {
       igst: calculatedIgst,
       total: calculatedTotal,
       status: status || 'draft',
-      quoteId: quoteId || null, // Reference to original quote if converted from quote
+      // Workspace / project metadata (align with quotations / POs)
+      projectId: resolvedProjectId,
+      projectName: projectName || '',
+      workspaceId: workspaceId || null,
+      workspaceName: workspaceName || '',
+      taskId: taskId || null,
+      taskName: taskName || '',
+      subtaskId: subtaskId || null,
+      subtaskName: subtaskName || '',
+      clientId: clientId || null,
+      // References back to quote / PO
+      quoteId: quoteId || null,
+      referenceQuoteNumber: referenceQuoteNumber || null,
+      referencePoNumber: referencePoNumber || null,
       createdAt,
       updatedAt: createdAt
     };
@@ -1104,6 +1135,210 @@ const createInvoice = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to create invoice',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Create a new purchase order for a vendor from a quotation
+ * @route POST /api/workspace/purchase-orders
+ * @access Private (Vendor only)
+ */
+const createPurchaseOrderFromQuote = async (req, res) => {
+  try {
+    console.log('📋 CREATE PURCHASE ORDER - Request body:', req.body);
+    console.log('📋 CREATE PURCHASE ORDER - User:', req.user);
+
+    const {
+      vendorId,
+      quotationId,
+      customPoId,
+      referenceQuoteNumber,
+      customerId,
+      customerName,
+      customerDetails,
+      items,
+      subtotal,
+      totalCgst,
+      totalSgst,
+      totalIgst,
+      total,
+      status,
+      workspaceId,
+      workspaceName,
+      projectId,
+      projectName,
+      taskId,
+      taskName,
+      subtaskId,
+      subtaskName,
+      clientId: clientIdFromBody,
+      pdfUrl
+    } = req.body;
+
+    const userRole = req.user?.role;
+    const currentVendorId = req.user?.vendorId;
+
+    // Only vendors can create purchase orders
+    if (userRole !== 'vendor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only vendors can create purchase orders'
+      });
+    }
+
+    if (!vendorId || !quotationId || !items || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID, quotation ID, and items are required'
+      });
+    }
+
+    if (currentVendorId && vendorId !== currentVendorId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Vendors can only create purchase orders for themselves'
+      });
+    }
+
+    const purchaseOrderId = `PO-${Date.now()}-${uuidv4().slice(0, 8)}`;
+    const createdAt = new Date().toISOString();
+
+    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    const projectContext = await getProjectContextForWorkspace(workspaceId);
+    const clientId = clientIdFromBody || projectContext?.clientId || null;
+    const resolvedProjectId = projectContext?.projectId || projectId || null;
+
+    // Calculate subtotal from items if not provided
+    let calculatedSubtotal = subtotal;
+    if (!calculatedSubtotal || calculatedSubtotal === 0) {
+      calculatedSubtotal = items.reduce((sum, item) => {
+        const itemAmount = parseFloat(item.amount) || 0;
+        return sum + itemAmount;
+      }, 0);
+    }
+
+    // Calculate CGST, SGST, IGST from items if not provided
+    let calculatedCgst = totalCgst;
+    let calculatedSgst = totalSgst;
+    let calculatedIgst = totalIgst;
+
+    if (
+      (!calculatedCgst || calculatedCgst === 0) &&
+      (!calculatedSgst || calculatedSgst === 0) &&
+      (!calculatedIgst || calculatedIgst === 0)
+    ) {
+      calculatedCgst = items.reduce((sum, item) => {
+        const cgstAmount = parseFloat(item.cgstAmount) || 0;
+        return sum + cgstAmount;
+      }, 0);
+
+      calculatedSgst = items.reduce((sum, item) => {
+        const sgstAmount = parseFloat(item.sgstAmount) || 0;
+        return sum + sgstAmount;
+      }, 0);
+
+      calculatedIgst = items.reduce((sum, item) => {
+        const igstAmount = parseFloat(item.igstAmount) || 0;
+        return sum + igstAmount;
+      }, 0);
+    }
+
+    // Calculate total if not provided
+    let calculatedTotal = total;
+    if (!calculatedTotal || calculatedTotal === 0) {
+      calculatedTotal = calculatedSubtotal + calculatedCgst + calculatedSgst + calculatedIgst;
+    }
+
+    const purchaseOrder = {
+      purchaseOrderId,
+      purchaseOrderNumber: customPoId || quotationId,
+      customPoId: customPoId || null,
+      referenceQuoteNumber: referenceQuoteNumber || null,
+      vendorId,
+      clientId: clientId || null,
+      customerId: customerId || null,
+      customerName: customerName || '',
+      customerDetails: customerDetails || {},
+      quotationId,
+      purchaseOrderDate: createdAt.split('T')[0],
+      items: items || [],
+      subtotal: calculatedSubtotal,
+      cgst: calculatedCgst,
+      sgst: calculatedSgst,
+      igst: calculatedIgst,
+      total: calculatedTotal,
+      status: status || 'sent to pm',
+      statusType: 'pending',
+      workspaceId: workspaceId || null,
+      workspaceName: workspaceName || '',
+      projectId: resolvedProjectId,
+      projectName: projectName || '',
+      taskId: taskId || null,
+      taskName: taskName || '',
+      subtaskId: subtaskId || null,
+      subtaskName: subtaskName || '',
+      pdfUrl: pdfUrl || null,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const params = {
+      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
+      Item: marshall(purchaseOrder, { removeUndefinedValues: true })
+    };
+
+    await dbClient.send(new PutItemCommand(params));
+
+    // After creating the purchase order, update the related quotation status
+    // so it reflects that a PO has been raised and sent to PM for review.
+    if (vendorId && quotationId) {
+      try {
+        const updateQuoteStatusParams = {
+          TableName: WORKSPACE_QUOTATIONS_TABLE,
+          Key: marshall({
+            vendorId,
+            quotationId
+          }),
+          UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt',
+          ExpressionAttributeNames: {
+            '#status': 'status',
+            '#updatedAt': 'updatedAt'
+          },
+          ExpressionAttributeValues: marshall({
+            ':status': 'po sent to pm for review',
+            ':updatedAt': new Date().toISOString()
+          })
+        };
+
+        await dbClient.send(new UpdateItemCommand(updateQuoteStatusParams));
+        console.log(
+          `✅ Updated quotation ${quotationId} status to 'po sent to pm for review' after creating purchase order`
+        );
+      } catch (statusError) {
+        console.error(
+          '⚠️ Failed to update quotation status after creating purchase order:',
+          statusError
+        );
+        // Do not fail the PO creation response if the status update fails
+      }
+    }
+
+    console.log(
+      `✅ Created purchase order ${purchaseOrderId} for vendor ${vendorId} from quotation ${quotationId}`
+    );
+
+    res.status(201).json({
+      success: true,
+      data: purchaseOrder,
+      message: 'Purchase order created successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error creating purchase order:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create purchase order',
       error: error.message
     });
   }
@@ -2176,6 +2411,9 @@ export {
   // Invoices
   createInvoice,
   getInvoices,
+
+  // Purchase Orders
+  createPurchaseOrderFromQuote,
 
   // Credit Notes
   createCreditNote,
