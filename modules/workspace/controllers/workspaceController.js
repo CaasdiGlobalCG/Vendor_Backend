@@ -110,7 +110,8 @@ const createQuotation = async (req, res) => {
       taskId,
       taskName,
       subtaskId,
-      subtaskName
+      subtaskName,
+      pdfUrl
     } = req.body;
     const userRole = req.user?.role;
 
@@ -179,12 +180,6 @@ const createQuotation = async (req, res) => {
       calculatedTotal = calculatedSubtotal + calculatedCgst + calculatedSgst + calculatedIgst;
     }
 
-    // NOTE:
-    // We no longer generate the final PDF here for workspace quotations.
-    // The styled, user-facing PDF is generated on the frontend using html2pdf,
-    // uploaded to S3, and then the pdfUrl is patched via updateQuotationPdfUrl.
-    // To avoid confusion and double-PDF generation, we leave pdfUrl null at creation time.
-    const pdfUrl = null;
 
     const quotation = {
       quotationId,
