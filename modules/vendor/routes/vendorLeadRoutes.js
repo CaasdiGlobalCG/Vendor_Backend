@@ -14,5 +14,6 @@ router.post('/:leadId/respond', vendorLeadController.respondToLead);        // P
 router.put('/:leadId/response', vendorLeadController.updateLeadResponse);   // PUT /api/vendor-leads/:leadId/response
 router.post('/:leadId/boq-download', vendorLeadController.getVendorLeadBoqUrl);   // POST /api/vendor-leads/:leadId/boq-download
 router.post('/:leadId/quotation', vendorLeadController.uploadLeadQuotation);      // POST /api/vendor-leads/:leadId/quotation
+router.put('/:leadId/quotation', vendorLeadController.updateLeadQuotation);       // PUT /api/vendor-leads/:leadId/quotation
 
 export default router;

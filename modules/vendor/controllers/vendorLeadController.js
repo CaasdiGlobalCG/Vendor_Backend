@@ -642,3 +642,85 @@ export const getVendorLeadStats = async (req, res) => {
     });
   }
 };
+
+// Vendor: Update lead with quotation pdfUrl and status to vendor_accepted
+export const updateLeadQuotation = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { vendorId, pmId, pdfUrl } = req.body;
+
+    if (!vendorId || !pdfUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'vendorId and pdfUrl are required'
+      });
+    }
+
+    console.log('📝 Updating lead with quotation and approving:', {
+      leadId,
+      vendorId
+    });
+
+    // Get existing lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify vendor has access to this lead
+    if (lead.vendorId && lead.vendorId !== vendorId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    // Update lead_invitations table with pdfUrl, status=vendor_accepted, and vendorResponse
+    const updateParams = {
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId },
+      UpdateExpression: 'SET pdfUrl = :pdfUrl, #status = :status, vendorResponse = :vendorResponse, updatedAt = :now',
+      ExpressionAttributeNames: {
+        '#status': 'status'
+      },
+      ExpressionAttributeValues: {
+        ':pdfUrl': pdfUrl,
+        ':status': 'vendor_accepted',
+        ':vendorResponse': {
+          accepted: true,
+          quotationPdfUrl: pdfUrl,
+          submittedAt: now
+        },
+        ':now': now
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const result = await dynamoDB.update(updateParams).promise();
+
+    console.log(`✅ Lead ${leadId} updated with quotation and status changed to vendor_accepted`);
+
+    res.json({
+      success: true,
+      quotation: result.Attributes
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating lead quotation:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update quotation'
+    });
+  }
+};;
