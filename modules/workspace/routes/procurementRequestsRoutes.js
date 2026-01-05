@@ -2,7 +2,8 @@ import express from 'express';
 import {
   createProcurementRequest,
   getProcurementRequests,
-  getProcurementRequestById
+  getProcurementRequestById,
+  updateProcurementRequest
 } from '../controllers/procurementRequestsController.js';
 import { authenticateUser } from '../../../middleware/authMiddleware.js';
 
@@ -122,6 +123,68 @@ router.get('/', getProcurementRequests);
  *         description: Internal server error
  */
 router.get('/:requestId', getProcurementRequestById);
+
+/**
+ * @swagger
+ * /api/procurement-requests/{requestId}:
+ *   put:
+ *     summary: Update an existing procurement request
+ *     tags: [Procurement Requests]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: requestId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the procurement request to update
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               item:
+ *                 type: string
+ *                 description: Name of the item/material
+ *               itemDescription:
+ *                 type: string
+ *                 description: Description of the item
+ *               quantity:
+ *                 type: number
+ *                 description: Quantity requested
+ *               priority:
+ *                 type: string
+ *                 enum: [low, medium, high]
+ *                 description: Priority level
+ *               status:
+ *                 type: string
+ *                 description: Status of the request
+ *               sentOn:
+ *                 type: string
+ *                 description: Date the request was sent
+ *               amount:
+ *                 type: number
+ *                 description: Amount for the request
+ *               category:
+ *                 type: string
+ *                 description: Category of the request
+ *               department:
+ *                 type: string
+ *                 description: Department
+ *     responses:
+ *       200:
+ *         description: Procurement request updated successfully
+ *       400:
+ *         description: Bad request - missing required fields
+ *       404:
+ *         description: Procurement request not found
+ *       500:
+ *         description: Internal server error
+ */
+router.put('/:requestId', updateProcurementRequest);
 
 export default router;
 

@@ -1,4 +1,4 @@
-import { DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 
 const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
@@ -314,10 +314,208 @@ const getProcurementRequestById = async (req, res) => {
   }
 };
 
+/**
+ * Update an existing procurement request
+ * @route PUT /api/procurement-requests/:requestId
+ * @access Private
+ */
+const updateProcurementRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    
+    if (!requestId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Request ID is required'
+      });
+    }
+
+    console.log(`📦 Updating procurement request: ${requestId}`, JSON.stringify(req.body, null, 2));
+    
+    // Get user info from the request (set by auth middleware or x-user-info header)
+    let currentUser = req.user || {};
+    
+    // If user info is in header, parse it
+    if (req.headers['x-user-info']) {
+      try {
+        const userInfo = JSON.parse(req.headers['x-user-info']);
+        currentUser = { ...currentUser, ...userInfo };
+      } catch (e) {
+        console.log('⚠️ Could not parse x-user-info header');
+      }
+    }
+    
+    // Extract fields from request body
+    const { 
+      amount,
+      category,
+      department,
+      item,
+      itemDescription,
+      priority,
+      projectClientReference,
+      quantity,
+      requestor,
+      requiredByDate,
+      sentOn,
+      source,
+      status,
+      workspaceId
+    } = req.body;
+
+    // Build update expression dynamically
+    const updateExpressions = [];
+    const expressionAttributeNames = {};
+    const expressionAttributeValues = {};
+    
+    const now = new Date();
+    
+    // Add updatedAt timestamp
+    updateExpressions.push('#updatedAt = :updatedAt');
+    expressionAttributeNames['#updatedAt'] = 'updatedAt';
+    expressionAttributeValues[':updatedAt'] = { S: now.toISOString() };
+    
+    // Add each field if provided
+    if (amount !== undefined) {
+      updateExpressions.push('#amount = :amount');
+      expressionAttributeNames['#amount'] = 'amount';
+      expressionAttributeValues[':amount'] = { N: String(typeof amount === 'number' ? amount : parseFloat(amount) || 0) };
+    }
+    
+    if (category !== undefined) {
+      updateExpressions.push('#category = :category');
+      expressionAttributeNames['#category'] = 'category';
+      expressionAttributeValues[':category'] = { S: category || 'General' };
+    }
+    
+    if (department !== undefined) {
+      updateExpressions.push('#department = :department');
+      expressionAttributeNames['#department'] = 'department';
+      expressionAttributeValues[':department'] = { S: department || 'Workspace' };
+    }
+    
+    if (item !== undefined) {
+      updateExpressions.push('#item = :item');
+      expressionAttributeNames['#item'] = 'item';
+      expressionAttributeValues[':item'] = { S: item.trim() };
+    }
+    
+    if (itemDescription !== undefined) {
+      updateExpressions.push('#itemDescription = :itemDescription');
+      expressionAttributeNames['#itemDescription'] = 'itemDescription';
+      expressionAttributeValues[':itemDescription'] = { S: itemDescription || '' };
+    }
+    
+    if (priority !== undefined) {
+      updateExpressions.push('#priority = :priority');
+      expressionAttributeNames['#priority'] = 'priority';
+      expressionAttributeValues[':priority'] = { S: priority || 'medium' };
+    }
+    
+    if (projectClientReference !== undefined) {
+      updateExpressions.push('#projectClientReference = :projectClientReference');
+      expressionAttributeNames['#projectClientReference'] = 'projectClientReference';
+      expressionAttributeValues[':projectClientReference'] = projectClientReference === null ? { NULL: true } : { S: projectClientReference };
+    }
+    
+    if (quantity !== undefined) {
+      updateExpressions.push('#quantity = :quantity');
+      expressionAttributeNames['#quantity'] = 'quantity';
+      expressionAttributeValues[':quantity'] = { N: String(typeof quantity === 'number' ? quantity : parseInt(quantity) || 1) };
+    }
+    
+    if (requestor !== undefined) {
+      updateExpressions.push('#requestor = :requestor');
+      expressionAttributeNames['#requestor'] = 'requestor';
+      expressionAttributeValues[':requestor'] = { S: requestor || 'UNKNOWN_VENDOR' };
+    }
+    
+    if (requiredByDate !== undefined) {
+      updateExpressions.push('#requiredByDate = :requiredByDate');
+      expressionAttributeNames['#requiredByDate'] = 'requiredByDate';
+      expressionAttributeValues[':requiredByDate'] = requiredByDate === null ? { NULL: true } : { S: requiredByDate };
+    }
+    
+    if (sentOn !== undefined) {
+      updateExpressions.push('#sentOn = :sentOn');
+      expressionAttributeNames['#sentOn'] = 'sentOn';
+      expressionAttributeValues[':sentOn'] = { S: sentOn };
+    }
+    
+    if (source !== undefined) {
+      updateExpressions.push('#source = :source');
+      expressionAttributeNames['#source'] = 'source';
+      expressionAttributeValues[':source'] = { S: source || 'workspace' };
+    }
+    
+    if (status !== undefined) {
+      updateExpressions.push('#status = :status');
+      expressionAttributeNames['#status'] = 'status';
+      expressionAttributeValues[':status'] = { S: status || 'Pending' };
+    }
+    
+    if (workspaceId !== undefined) {
+      updateExpressions.push('#workspaceId = :workspaceId');
+      expressionAttributeNames['#workspaceId'] = 'workspaceId';
+      expressionAttributeValues[':workspaceId'] = { S: workspaceId };
+    }
+    
+    // If no fields to update, return error
+    if (updateExpressions.length === 1) { // Only updatedAt was added
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+    
+    // Update the item in DynamoDB
+    const params = {
+      TableName: PROCUREMENT_REQUESTS_TABLE,
+      Key: marshall({ requestId }),
+      UpdateExpression: 'SET ' + updateExpressions.join(', '),
+      ExpressionAttributeNames: expressionAttributeNames,
+      ExpressionAttributeValues: expressionAttributeValues,
+      ReturnValues: 'ALL_NEW'
+    };
+    
+    console.log(`📦 Update params for ${requestId}:`, JSON.stringify(params, null, 2));
+    
+    const result = await dbClient.send(new UpdateItemCommand(params));
+    const updatedRequest = unmarshall(result.Attributes);
+    
+    console.log(`✅ Updated procurement request ${requestId}`);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Procurement request updated successfully',
+      data: updatedRequest
+    });
+    
+  } catch (error) {
+    console.error('❌ Error updating procurement request:', error);
+    console.error('❌ Error stack:', error.stack);
+    console.error('❌ Request body:', JSON.stringify(req.body, null, 2));
+    
+    // More detailed error response
+    const statusCode = error.name === 'ValidationException' ? 400 : 500;
+    const errorMessage = error.name === 'ValidationException' 
+      ? `Validation error: ${error.message}`
+      : 'Failed to update procurement request';
+      
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+};
+
 export {
   createProcurementRequest,
   getProcurementRequests,
-  getProcurementRequestById
+  getProcurementRequestById,
+  updateProcurementRequest
 };
 
 
