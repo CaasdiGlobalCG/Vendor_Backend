@@ -8,7 +8,9 @@ import {
   sendQuotationToPM,
   updateQuotationPdfUrl,
   createInvoice,
+  updateInvoice,
   getInvoices,
+  sendInvoiceToPM,
   createCreditNote,
   createItem,
   getItems,
@@ -111,11 +113,25 @@ router.put('/quotations/:quotationId/send-to-pm', authenticateUser, requireVendo
 router.post('/invoices', authenticateUser, requireVendor, createInvoice);
 
 /**
+ * @route   PUT /api/workspace/invoices/:invoiceId
+ * @desc    Update an existing invoice (Vendor only)
+ * @access  Private
+ */
+router.put('/invoices/:invoiceId', authenticateUser, requireVendor, updateInvoice);
+
+/**
  * @route   GET /api/workspace/invoices
  * @desc    Get invoices based on user role (Vendor sees own, PM sees all)
  * @access  Private
  */
 router.get('/invoices', authenticateUser, getWorkspaceInvoices);
+
+/**
+ * @route   PUT /api/workspace/invoices/:invoiceId/send-to-pm
+ * @desc    Send invoice to PM for review (Vendor only)
+ * @access  Private
+ */
+router.put('/invoices/:invoiceId/send-to-pm', authenticateUser, requireVendor, sendInvoiceToPM);
 
 /**
  * @route   PUT /api/workspace/invoices/:invoiceId/status
