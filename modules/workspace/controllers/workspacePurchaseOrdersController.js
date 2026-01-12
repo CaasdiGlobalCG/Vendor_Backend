@@ -93,6 +93,10 @@ const getWorkspacePurchaseOrders = async (req, res) => {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2
         })}`,
+        // Include PDF URL for preview (primary: pdfUrl, fallback: poPdfUrl, commissionedPurchaseOrderUrl)
+        pdfUrl: po.pdfUrl || po.poPdfUrl || po.commissionedPurchaseOrderUrl || '',
+        poPdfUrl: po.poPdfUrl || '',
+        commissionedPurchaseOrderUrl: po.commissionedPurchaseOrderUrl || '',
         statusType: po.statusType || 'pending',
         status: po.status || 'Pending',
         purchaseReturns: po.purchaseReturns || 'None',
