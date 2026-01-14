@@ -19,6 +19,21 @@ const transporter = nodemailer.createTransport({
 const otpStore = new Map();
 
 /**
+ * Get the RPID for WebAuthn based on the request hostname
+ */
+const getRPID = (hostname) => {
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return hostname;
+  }
+  // For caasdiglobal.in domains, use the base domain to allow cross-subdomain usage
+  if (hostname.endsWith('.caasdiglobal.in')) {
+    return 'caasdiglobal.in';
+  }
+  // For other domains, use the full hostname
+  return hostname;
+};
+
+/**
  * Generate registration options for passkey setup
  * This sends a challenge to the client for WebAuthn registration
  */
@@ -72,7 +87,7 @@ export const getRegistrationOptions = async (req, res) => {
       challenge,
       rp: {
         name: 'CAASI Vendor Dashboard',
-        id: new URL(process.env.VENDOR_FRONTEND_URL || 'http://localhost:5173').hostname
+        id: getRPID(req.hostname)
       },
       user: {
         id: userIdForPasskey,
@@ -280,7 +295,7 @@ export const getMFAVerificationOptions = async (req, res) => {
     const authenticationOptions = {
       challenge,
       timeout: 60000,
-      rpId: new URL(process.env.VENDOR_FRONTEND_URL || 'http://localhost:5173').hostname,
+      rpId: getRPID(req.hostname),
       userVerification: 'preferred',
       allowCredentials
     };
