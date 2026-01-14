@@ -60,8 +60,18 @@ export const getWorkspaceByProjectId = async (req, res) => {
     if (!workspace) {
       return res.status(404).json({ message: 'Workspace not found for this project' });
     }
-    
-    res.status(200).json(workspace);
+    // Normalize status fields for UI compatibility
+    const statusRaw = (workspace.status || '').toLowerCase();
+    const projectStatusRaw = (workspace.project_status || '').toLowerCase();
+    let normalizedStatus = workspace.status || 'Pending';
+    if (statusRaw === 'project completed' || statusRaw === 'completed' || projectStatusRaw === 'project completed' || projectStatusRaw === 'completed') {
+      normalizedStatus = 'Completed';
+    } else if (statusRaw === 'in progress' || statusRaw === 'active' || statusRaw === 'inprogress' || projectStatusRaw === 'in progress' || projectStatusRaw === 'active' || projectStatusRaw === 'inprogress') {
+      normalizedStatus = 'InProgress';
+    }
+    // Return workspace with normalized status field
+    const responseWorkspace = { ...workspace, status: normalizedStatus };
+    res.status(200).json(responseWorkspace);
   } catch (error) {
     console.error('Error getting workspace by project ID:', error);
     res.status(500).json({ message: 'Failed to get workspace', error: error.message });
@@ -103,7 +113,19 @@ export const updateWorkspace = async (req, res) => {
   try {
     const { id } = req.params;
     const workspaceData = req.body;
-    
+    // Fetch existing workspace to enforce locks (e.g., project completed)
+    const existingWorkspace = await DynamoWorkspace.getWorkspaceById(id);
+    if (!existingWorkspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    // If workspace is completed, prevent vendors from making changes
+    const requesterRole = req.user?.role || '';
+    const isVendorRequester = requesterRole && requesterRole.toLowerCase() !== 'pm' && requesterRole.toLowerCase() !== 'admin';
+    if (existingWorkspace.status === 'project completed' && isVendorRequester) {
+      return res.status(403).json({ message: 'Workspace is locked as project completed; edits are not allowed' });
+    }
+
     const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, workspaceData);
     
     if (!updatedWorkspace) {
@@ -134,6 +156,19 @@ export const saveWorkspaceCanvas = async (req, res) => {
       }
     });
     
+    // Fetch existing workspace to ensure it's not locked
+    const existingWorkspace = await DynamoWorkspace.getWorkspaceById(id);
+    if (!existingWorkspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    // Prevent vendors from modifying canvas on completed projects
+    const requesterRole = req.user?.role || '';
+    const isVendorRequester = requesterRole && requesterRole.toLowerCase() !== 'pm' && requesterRole.toLowerCase() !== 'admin';
+    if (existingWorkspace.status === 'project completed' && isVendorRequester) {
+      return res.status(403).json({ message: 'Workspace is locked as project completed; canvas updates are not allowed' });
+    }
+
     const workspaceData = {
       nodes: nodes || [],
       edges: edges || [],
@@ -224,6 +259,12 @@ export const addTaskToWorkspace = async (req, res) => {
     if (!workspace) {
       return res.status(404).json({ message: 'Workspace not found' });
     }
+      // Prevent adding tasks if workspace is completed and requester is vendor
+      const requesterRole = req.user?.role || '';
+      const isVendorRequester = requesterRole && requesterRole.toLowerCase() !== 'pm' && requesterRole.toLowerCase() !== 'admin';
+      if (workspace.status === 'project completed' && isVendorRequester) {
+        return res.status(403).json({ message: 'Workspace is locked as project completed; cannot add tasks' });
+      }
     
     // Create new task
     const newTask = {
@@ -288,6 +329,12 @@ export const addSubtaskToTask = async (req, res) => {
     const workspace = await DynamoWorkspace.getWorkspaceById(id);
     if (!workspace) {
       return res.status(404).json({ message: 'Workspace not found' });
+    }
+    // Prevent adding subtasks if workspace is completed and requester is vendor
+    const requesterRole2 = req.user?.role || '';
+    const isVendorRequester2 = requesterRole2 && requesterRole2.toLowerCase() !== 'pm' && requesterRole2.toLowerCase() !== 'admin';
+    if (workspace.status === 'project completed' && isVendorRequester2) {
+      return res.status(403).json({ message: 'Workspace is locked as project completed; cannot add subtasks' });
     }
     
     // Find the task

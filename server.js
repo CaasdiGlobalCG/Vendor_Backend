@@ -29,6 +29,7 @@ import postServiceRoutes from './modules/post-services/routes/postServiceRoutes.
 import postServiceNotificationRoutes from './modules/post-services/routes/notificationRoutes.js'; // New import for Post Services Notifications routes
 import dashboardRoutes from './routes/dashboard.routes.js';
 import { getWorkspacePurchaseOrders } from './modules/workspace/controllers/workspacePurchaseOrdersController.js';
+import sendProgressEmailRoutes from './routes/sendProgressEmail.js'; // Import sendProgressEmail route
 
 // Import WebSocket initialization
 import { initWebSocketServer } from './websocket/notificationSocket.js';
@@ -203,6 +204,7 @@ app.use('/api/trunky', trunkyRoutes); // Trunky Task Management routes
 app.use('/api/customers', customersRoutes); // Customers routes
 app.use('/api/items', itemsRoutes); // Items routes
 app.use('/api/turnkey-workflows', turnkeyWorkflowRoutes); // Turnkey Workflow Management routes
+app.use('/api', sendProgressEmailRoutes); // Register sendProgressEmail route
 
 // Error handler
 app.use((err, req, res, next) => {

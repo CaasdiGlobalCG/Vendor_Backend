@@ -1,4 +1,5 @@
 import express from 'express';
+import multer from 'multer';
 import {
   createQuotation,
   getQuotations,
@@ -21,7 +22,9 @@ import {
   getCustomerById,
   updateCustomer,
   searchCustomers,
-  createPurchaseOrderFromQuote
+  createPurchaseOrderFromQuote,
+  updateProgress,
+  submitProjectCompletion
 } from '../controllers/workspaceController.js';
 import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus } from '../controllers/workspaceInvoicesController.js';
 import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats } from '../controllers/workspaceCreditNotesController.js';
@@ -33,6 +36,10 @@ import { getRevenueForecasting, getCohortAnalysis } from '../controllers/subscri
 import { authenticateUser, requireVendor, requirePM, checkVendorAccess } from '../../../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 // Apply authentication middleware to all routes
 router.use(authenticateUser);
@@ -344,5 +351,19 @@ router.get('/subscriptions/:subscriptionId/history', authenticateUser, getSubscr
  * @access  Private
  */
 router.post('/subscriptions/:subscriptionId/generate-invoice', authenticateUser, requireVendor, generateSubscriptionInvoice);
+
+/**
+ * @route   POST /api/workspace/update-progress
+ * @desc    Update project progress (Vendor only)
+ * @access  Private
+ */
+router.post('/update-progress', authenticateUser, requireVendor, upload.single('proofOfCompletion'), updateProgress);
+
+/**
+ * @route   POST /api/workspace/project-completion
+ * @desc    Submit project completion request (Vendor only)
+ * @access  Private
+ */
+router.post('/project-completion', authenticateUser, requireVendor, upload.single('completionFiles'), submitProjectCompletion);
 
 export default router;

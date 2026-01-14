@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import PDFDocument from 'pdfkit';
 import { getStreamAsBuffer } from 'get-stream';
 import { uploadFileToS3 } from '../../../utils/s3Utils.js';
+import { updateWorkspace } from '../models/DynamoWorkspace.js';
 
 const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 
@@ -2642,5 +2643,154 @@ export {
   getCustomers,
   getCustomerById,
   updateCustomer,
-  searchCustomers
+  searchCustomers,
+
+  // Progress Update
+  updateProgress,
+
+  // Project Completion
+  submitProjectCompletion
+};
+
+// Update project progress
+const updateProgress = async (req, res) => {
+  try {
+    const { workspaceId, vendorId, title, description, workDone, workPending, projectId, taskId, subtaskId } = req.body;
+    const proofOfCompletion = req.file;
+
+    if (!workspaceId || !vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID and Vendor ID are required'
+      });
+    }
+
+    if (!title || !description) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title and description are required'
+      });
+    }
+
+    // Prepare progress data
+    const progressData = {
+      title,
+      description,
+      workDone: workDone || '',
+      workPending: workPending || '',
+      projectId: projectId || '',
+      taskId: taskId || '',
+      subtaskId: subtaskId || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    // Handle file upload if provided
+    if (proofOfCompletion) {
+      try {
+        const fileUrl = await uploadFileToS3(proofOfCompletion, `progress/${workspaceId}`);
+        progressData.proofOfCompletion = fileUrl;
+      } catch (uploadError) {
+        console.error('Error uploading proof of completion:', uploadError);
+        // Continue without the file, don't fail the entire operation
+      }
+    }
+
+    // Update workspace with project_status
+    const updatedWorkspace = await updateWorkspace(workspaceId, {
+      project_status: progressData
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Progress updated successfully',
+      data: {
+        workspaceId,
+        project_status: progressData
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating progress:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update progress',
+      error: error.message
+    });
+  }
+};
+
+// Submit project completion request
+const submitProjectCompletion = async (req, res) => {
+  console.log('🔄 submitProjectCompletion called with:', {
+    workspaceId: req.body.workspaceId,
+    projectId: req.body.projectId,
+    vendorId: req.body.vendorId,
+    hasFile: !!req.file
+  });
+
+  try {
+    const { workspaceId, projectId, vendorId, markCompleted, completionDescription } = req.body;
+    const completionFiles = req.file;
+
+    if (!workspaceId || !projectId || !vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID, Project ID, and Vendor ID are required'
+      });
+    }
+
+    if (!completionDescription) {
+      return res.status(400).json({
+        success: false,
+        message: 'Completion description is required'
+      });
+    }
+
+    // Prepare completion data
+    const completionData = {
+      projectId,
+      vendorId,
+      markCompleted: markCompleted || false,
+      completionDescription,
+      submittedAt: new Date().toISOString()
+    };
+
+    // Handle file upload if provided
+    if (completionFiles) {
+      try {
+        const fileUrl = await uploadFileToS3(completionFiles, `completion/${workspaceId}`);
+        completionData.completionFiles = fileUrl;
+        console.log('✅ File uploaded to S3:', fileUrl);
+      } catch (uploadError) {
+        console.error('Error uploading completion files:', uploadError);
+        // Continue without the file, don't fail the entire operation
+      }
+    }
+
+    console.log('📝 Updating workspace with completion data:', completionData);
+
+    // Update workspace with projectCompletionRequest
+    const updatedWorkspace = await updateWorkspace(workspaceId, {
+      projectCompletionRequest: completionData
+    });
+
+    console.log('✅ Workspace updated successfully:', !!updatedWorkspace);
+
+    res.status(200).json({
+      success: true,
+      message: 'Project completion request submitted successfully',
+      data: {
+        workspaceId,
+        projectCompletionRequest: completionData
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error submitting project completion:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit project completion request',
+      error: error.message
+    });
+  }
 };
