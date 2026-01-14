@@ -13,6 +13,8 @@ export const createUser = async (userData) => {
     status: userData.status || 'pending',
     hasFilledForm: userData.hasFilledForm || false,
     roleSelected: userData.roleSelected === true,
+    hasPasskey: userData.hasPasskey || false,
+    passkeyRegisteredAt: userData.passkeyRegisteredAt || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -27,6 +29,14 @@ export const getUserByEmail = async (email) => {
     ExpressionAttributeValues: { ':email': email },
   }).promise();
   return (res.Items || [])[0] || null;
+};
+
+export const getUserById = async (id) => {
+  const res = await dynamoDB.get({
+    TableName: USERS_TABLE,
+    Key: { userId: id },
+  }).promise();
+  return res.Item || null;
 };
 
 export const updateUser = async (id, updates) => {

@@ -390,6 +390,14 @@ export const respondToLead = async (req, res) => {
       });
     }
 
+    // If accepting, quotation upload is mandatory
+    if (accepted && (!attachments || attachments.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Quotation upload is required when accepting a lead'
+      });
+    }
+
     // Get lead
     const leadResult = await dynamoDB.get({
       TableName: LEAD_INVITATIONS_TABLE,

@@ -13,6 +13,7 @@ import './config/passport.js'; // 👈 Loads Google OAuth strategy
 // Import remaining non-modular routes
 // import authRoutes from './routes/authRoutes.js';
 import dynamoAuthRoutes from './routes/dynamoAuthRoutes.js';
+import passkeyRoutes from './routes/passkeyRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
 import s3Routes from './routes/s3.routes.js';  // Note the .js extension
 // productRoutes and serviceRoutes are now in vendor module
@@ -192,6 +193,7 @@ async function loadModules() {
 
 // === Non-modular API Routes ===
 app.use('/api/auth', dynamoAuthRoutes); // Google login/callback/set-role
+app.use('/api/auth/passkey', passkeyRoutes); // Passkey MFA routes
 app.use('/api/files', fileRoutes); // File upload/delete routes
 app.use('/api', dynamoActivityRoutes); // Activities routes
 app.use('/api/message-files', messageFileRoutes); // Message File Upload routes
