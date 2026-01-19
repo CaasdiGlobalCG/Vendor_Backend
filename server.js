@@ -16,6 +16,7 @@ import dynamoAuthRoutes from './routes/dynamoAuthRoutes.js';
 import passkeyRoutes from './routes/passkeyRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
 import s3Routes from './routes/s3.routes.js';  // Note the .js extension
+import ocrRoutes from './routes/ocrRoutes.js'; // OCR routes for cheque processing
 // productRoutes and serviceRoutes are now in vendor module
 import dynamoActivityRoutes from './routes/dynamoActivityRoutes.js';
 import messageFileRoutes from './routes/messageFileRoutes.js';
@@ -49,6 +50,7 @@ const isProd = process.env.NODE_ENV === 'production';
 const PROD_ORIGINS = ['https://caasdiglobal.in', 'https://www.caasdiglobal.in'];
 const LOCAL_DEV_ORIGINS = [
   'http://localhost:5173',
+  'http://localhost:5174',
   'http://localhost:5175',
   'http://localhost:5001',
   'http://localhost:3000',
@@ -134,6 +136,7 @@ app.get('/api/workspace/purchase-orders', async (req, res, next) => {
 //s3-bucket
 app.use('/api/s3', s3Routes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/ocr', ocrRoutes); // OCR routes for cheque processing
 
 
 // === Load Modular Routes ===
