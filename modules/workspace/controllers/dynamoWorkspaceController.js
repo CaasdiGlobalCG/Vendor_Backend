@@ -457,7 +457,8 @@ export const updateSubtaskCanvas = async (req, res) => {
     console.log('✅ Backend: Subtask canvas updated successfully', {
       nodesCount: nodes?.length || 0,
       edgesCount: edges?.length || 0,
-      workspaceNodesCount: updatedWorkspace?.nodes?.length || 0
+      workspaceNodesCount: updatedWorkspace?.nodes?.length || 0,
+      nodesWithImportant: nodes?.filter(n => n.data?.isImportant)?.length || 0
     });
     
     // Verify the nodes were actually saved to DynamoDB by reading back
@@ -473,6 +474,11 @@ export const updateSubtaskCanvas = async (req, res) => {
       if (verifyResult.Item) {
         console.log('🔍 Backend: Verification - nodes count in DynamoDB:', verifyResult.Item.nodes?.length || 0);
         console.log('🔍 Backend: Verification - edges count in DynamoDB:', verifyResult.Item.edges?.length || 0);
+        const importantNodes = verifyResult.Item.nodes?.filter(n => n.data?.isImportant) || [];
+        console.log('🔍 Backend: Important nodes count:', importantNodes.length);
+        if (importantNodes.length > 0) {
+          console.log('🔍 Backend: Important node details:', importantNodes.map(n => ({ id: n.id, name: n.data?.name })));
+        }
         if (verifyResult.Item.nodes?.length !== nodes?.length) {
           console.error('❌ Backend: MISMATCH! Nodes not saved correctly to DynamoDB!');
           console.error('❌ Backend: Expected nodes count:', nodes?.length || 0);
