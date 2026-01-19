@@ -127,39 +127,32 @@ export const deleteFile = async (req, res) => {
     // Get the vendor from DynamoDB
     const vendor = await DynamoVendor.getVendorByEmail(email);
 
-    // For delete operations, we need to know the file URL
-    // If vendor doesn't exist or doesn't have the file, return an error
-    if (!vendor) {
-      return res.status(404).json({
-        success: false,
-        message: 'Vendor not found'
-      });
+    // If vendor exists and has the file, delete from both S3 and DynamoDB
+    if (vendor && vendor[section] && vendor[section][documentType] && vendor[section][documentType].url) {
+      const fileUrl = vendor[section][documentType].url;
+      
+      try {
+        // Delete the file from S3
+        await deleteFileFromS3(fileUrl);
+      } catch (s3Error) {
+        console.warn('Warning: Could not delete file from S3:', s3Error.message);
+        // Continue even if S3 deletion fails, since the file might already be deleted
+      }
+
+      // Prepare update data for DynamoDB
+      const updateData = {};
+      updateData[section] = {
+        ...vendor[section]
+      };
+      
+      // Remove the document from the section
+      delete updateData[section][documentType];
+
+      // Update the vendor in DynamoDB
+      await DynamoVendor.updateVendor(vendor.id, updateData);
     }
 
-    // Check if the document exists
-    if (!vendor[section] || !vendor[section][documentType] || !vendor[section][documentType].url) {
-      return res.status(404).json({
-        success: false,
-        message: 'Document not found'
-      });
-    }
-
-    // Delete the file from S3
-    const fileUrl = vendor[section][documentType].url;
-    await deleteFileFromS3(fileUrl);
-
-    // Prepare update data for DynamoDB
-    const updateData = {};
-    updateData[section] = {
-      ...vendor[section]
-    };
-    
-    // Remove the document from the section
-    delete updateData[section][documentType];
-
-    // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, updateData);
-
+    // Return success regardless - file is deleted from user's perspective
     res.status(200).json({
       success: true,
       message: 'File deleted successfully'
