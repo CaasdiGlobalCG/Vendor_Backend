@@ -12,7 +12,6 @@ import {
   updateInvoice,
   getInvoices,
   sendInvoiceToPM,
-  createCreditNote,
   createItem,
   getItems,
   updateItem,
@@ -24,7 +23,15 @@ import {
   searchCustomers,
   createPurchaseOrderFromQuote,
   updateProgress,
-  submitProjectCompletion
+  approveProgress,
+  rejectProgress,
+  clientApproveProgress,
+  clientRejectProgress,
+  submitProjectCompletion,
+  approveProjectComplete,
+  rejectProjectComplete,
+  clientApproveProjectComplete,
+  clientRejectProjectComplete
 } from '../controllers/workspaceController.js';
 import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus } from '../controllers/workspaceInvoicesController.js';
 import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats } from '../controllers/workspaceCreditNotesController.js';
@@ -33,7 +40,7 @@ import { getWorkspaceSubscriptions, getSubscriptionStats, createSubscription, up
 import purchaseRequisitionsRouter from './purchaseRequisitionsRoutes.js';
 import procurementRequestsRouter from './procurementRequestsRoutes.js';
 import { getRevenueForecasting, getCohortAnalysis } from '../controllers/subscriptionAnalyticsController.js';
-import { authenticateUser, requireVendor, requirePM, checkVendorAccess } from '../../../middleware/authMiddleware.js';
+import { authenticateUser, requireVendor, requirePM, requireClient, checkVendorAccess } from '../../../middleware/authMiddleware.js';
 
 const router = express.Router();
 
@@ -43,6 +50,66 @@ const upload = multer({ storage: storage });
 
 // Apply authentication middleware to all routes
 router.use(authenticateUser);
+
+// PM-only routes (before requireVendor middleware)
+/**
+ * @route   POST /api/workspace/approve-progress
+ * @desc    Approve progress submission (PM only)
+ * @access  Private
+ */
+router.post('/approve-progress', requirePM, approveProgress);
+
+/**
+ * @route   POST /api/workspace/reject-progress
+ * @desc    Reject progress submission (PM only)
+ * @access  Private
+ */
+router.post('/reject-progress', requirePM, rejectProgress);
+
+// Client-only routes (before requireVendor middleware)
+/**
+ * @route   POST /api/workspace/client-approve-progress
+ * @desc    Approve progress submission (Client only)
+ * @access  Private
+ */
+router.post('/client-approve-progress', authenticateUser, clientApproveProgress);
+
+/**
+ * @route   POST /api/workspace/client-reject-progress
+ * @desc    Reject progress submission (Client only)
+ * @access  Private
+ */
+router.post('/client-reject-progress', authenticateUser, clientRejectProgress);
+
+/**
+ * @route   POST /api/workspace/approve-project-complete
+ * @desc    Approve project completion (PM only)
+ * @access  Private
+ */
+router.post('/approve-project-complete', requirePM, approveProjectComplete);
+
+/**
+ * @route   POST /api/workspace/reject-project-complete
+ * @desc    Reject project completion (PM only)
+ * @access  Private
+ */
+router.post('/reject-project-complete', requirePM, rejectProjectComplete);
+
+/**
+ * @route   POST /api/workspace/client-approve-project-complete
+ * @desc    Approve project completion (Client only)
+ * @access  Private
+ */
+router.post('/client-approve-project-complete', authenticateUser, clientApproveProjectComplete);
+
+/**
+ * @route   POST /api/workspace/client-reject-project-complete
+ * @desc    Reject project completion (Client only)
+ * @access  Private
+ */
+router.post('/client-reject-project-complete', authenticateUser, clientRejectProjectComplete);
+
+// Apply vendor middleware to remaining routes
 router.use(requireVendor);
 
 // Mount purchase requisitions routes
@@ -179,13 +246,6 @@ router.get('/purchase-orders', authenticateUser, getWorkspacePurchaseOrders);
  * CREDIT NOTES ROUTES
  * ========================================
  */
-
-/**
- * @route   POST /api/workspace/credit-notes
- * @desc    Create a new credit note (Vendor only)
- * @access  Private
- */
-router.post('/credit-notes', authenticateUser, requireVendor, createCreditNote);
 
 /**
  * @route   GET /api/workspace/credit-notes

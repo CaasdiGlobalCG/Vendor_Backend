@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import PDFDocument from 'pdfkit';
 import { getStreamAsBuffer } from 'get-stream';
 import { uploadFileToS3 } from '../../../utils/s3Utils.js';
-import { updateWorkspace } from '../models/DynamoWorkspace.js';
+import { updateWorkspace, getWorkspaceById } from '../models/DynamoWorkspace.js';
 
 const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 
@@ -2647,15 +2647,23 @@ export {
 
   // Progress Update
   updateProgress,
+  approveProgress,
+  rejectProgress,
+  clientApproveProgress,
+  clientRejectProgress,
 
   // Project Completion
-  submitProjectCompletion
+  submitProjectCompletion,
+  approveProjectComplete,
+  rejectProjectComplete,
+  clientApproveProjectComplete,
+  clientRejectProjectComplete
 };
 
 // Update project progress
 const updateProgress = async (req, res) => {
   try {
-    const { workspaceId, vendorId, title, description, workDone, workPending, projectId, taskId, subtaskId } = req.body;
+    const { workspaceId, vendorId, title, description, workDone, workPending, projectId, taskId, subtaskId, reviewStatus } = req.body;
     const proofOfCompletion = req.file;
 
     if (!workspaceId || !vendorId) {
@@ -2681,6 +2689,7 @@ const updateProgress = async (req, res) => {
       projectId: projectId || '',
       taskId: taskId || '',
       subtaskId: subtaskId || '',
+      reviewStatus: reviewStatus || 'pending',
       updatedAt: new Date().toISOString()
     };
 
@@ -2695,9 +2704,23 @@ const updateProgress = async (req, res) => {
       }
     }
 
-    // Update workspace with project_status
+    // Get current workspace to preserve existing progress records
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const currentProgressArray = Array.isArray(currentWorkspace?.progress_submissions) 
+      ? currentWorkspace.progress_submissions 
+      : [];
+
+    // Add unique ID to this submission
+    progressData.id = `progress_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    progressData.submittedAt = new Date().toISOString();
+
+    // Append new progress record to array
+    const updatedProgressArray = [...currentProgressArray, progressData];
+
+    // Update workspace with progress_submissions array (keeping project_status for latest reference)
     const updatedWorkspace = await updateWorkspace(workspaceId, {
-      project_status: progressData
+      progress_submissions: updatedProgressArray,
+      project_status: progressData // Keep the latest one for quick reference
     });
 
     res.status(200).json({
@@ -2705,7 +2728,8 @@ const updateProgress = async (req, res) => {
       message: 'Progress updated successfully',
       data: {
         workspaceId,
-        project_status: progressData
+        progress: progressData,
+        totalSubmissions: updatedProgressArray.length
       }
     });
 
@@ -2752,6 +2776,7 @@ const submitProjectCompletion = async (req, res) => {
       vendorId,
       markCompleted: markCompleted || false,
       completionDescription,
+      reviewStatus: 'pending', // Set as pending for PM review
       submittedAt: new Date().toISOString()
     };
 
@@ -2767,11 +2792,11 @@ const submitProjectCompletion = async (req, res) => {
       }
     }
 
-    console.log('📝 Updating workspace with completion data:', completionData);
+    console.log('📝 Updating workspace with project_status (completion data):', completionData);
 
-    // Update workspace with projectCompletionRequest
+    // Update workspace with project_status (for completion submission)
     const updatedWorkspace = await updateWorkspace(workspaceId, {
-      projectCompletionRequest: completionData
+      project_status: completionData
     });
 
     console.log('✅ Workspace updated successfully:', !!updatedWorkspace);
@@ -2781,7 +2806,7 @@ const submitProjectCompletion = async (req, res) => {
       message: 'Project completion request submitted successfully',
       data: {
         workspaceId,
-        projectCompletionRequest: completionData
+        project_status: completionData
       }
     });
 
@@ -2790,6 +2815,431 @@ const submitProjectCompletion = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to submit project completion request',
+      error: error.message
+    });
+  }
+};
+
+// Approve progress submission (PM only)
+const approveProgress = async (req, res) => {
+  try {
+    const { workspaceId, approvalStatus, reviewStatus, progressId } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace to find and update the specific progress record
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const progressArray = Array.isArray(currentWorkspace?.progress_submissions) 
+      ? currentWorkspace.progress_submissions 
+      : [];
+
+    // If progressId is provided, update that specific record; otherwise update the latest
+    const targetId = progressId || (progressArray.length > 0 ? progressArray[progressArray.length - 1].id : null);
+    
+    const updatedProgressArray = progressArray.map(progress => {
+      if (progress.id === targetId) {
+        return {
+          ...progress,
+          approvalStatus: approvalStatus || 'pm_approved',
+          reviewStatus: reviewStatus || 'client_approval_pending',
+          pmApprovedAt: new Date().toISOString()
+        };
+      }
+      return progress;
+    });
+
+    // Update workspace
+    const updatedWorkspace = await updateWorkspace(workspaceId, {
+      progress_submissions: updatedProgressArray,
+      project_status: updatedProgressArray[updatedProgressArray.length - 1] // Keep latest as reference
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Progress approved successfully',
+      data: {
+        workspaceId,
+        approvalStatus: approvalStatus || 'pm_approved'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error approving progress:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve progress',
+      error: error.message
+    });
+  }
+};
+
+// Reject progress submission (PM only)
+const rejectProgress = async (req, res) => {
+  try {
+    const { workspaceId, approvalStatus, reviewStatus, rejectionReason, progressId } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace to find and update the specific progress record
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const progressArray = Array.isArray(currentWorkspace?.progress_submissions) 
+      ? currentWorkspace.progress_submissions 
+      : [];
+
+    // If progressId is provided, update that specific record; otherwise update the latest
+    const targetId = progressId || (progressArray.length > 0 ? progressArray[progressArray.length - 1].id : null);
+    
+    const updatedProgressArray = progressArray.map(progress => {
+      if (progress.id === targetId) {
+        return {
+          ...progress,
+          approvalStatus: approvalStatus || 'pm_rejected',
+          reviewStatus: reviewStatus || 'rejected',
+          rejectionReason: rejectionReason || '',
+          pmRejectedAt: new Date().toISOString()
+        };
+      }
+      return progress;
+    });
+
+    // Update workspace
+    const updatedWorkspace = await updateWorkspace(workspaceId, {
+      progress_submissions: updatedProgressArray,
+      project_status: updatedProgressArray[updatedProgressArray.length - 1] // Keep latest as reference
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Progress rejected successfully',
+      data: {
+        workspaceId,
+        approvalStatus: approvalStatus || 'pm_rejected'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error rejecting progress:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject progress',
+      error: error.message
+    });
+  }
+};
+
+// Approve progress submission by client
+const clientApproveProgress = async (req, res) => {
+  try {
+    const { workspaceId, approvalStatus, reviewStatus, progressId } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace to find and update the specific progress record
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const progressArray = Array.isArray(currentWorkspace?.progress_submissions) 
+      ? currentWorkspace.progress_submissions 
+      : [];
+
+    // If progressId is provided, update that specific record; otherwise update the latest
+    const targetId = progressId || (progressArray.length > 0 ? progressArray[progressArray.length - 1].id : null);
+    
+    const updatedProgressArray = progressArray.map(progress => {
+      if (progress.id === targetId) {
+        return {
+          ...progress,
+          approvalStatus: approvalStatus || 'client_approved',
+          reviewStatus: reviewStatus || 'client_approved',
+          clientApprovedAt: new Date().toISOString()
+        };
+      }
+      return progress;
+    });
+
+    // Update workspace
+    const updatedWorkspace = await updateWorkspace(workspaceId, {
+      progress_submissions: updatedProgressArray,
+      project_status: updatedProgressArray[updatedProgressArray.length - 1] // Keep latest as reference
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Progress approved by client successfully',
+      data: {
+        workspaceId,
+        approvalStatus: approvalStatus || 'client_approved'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error approving progress by client:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve progress',
+      error: error.message
+    });
+  }
+};
+
+// Reject progress submission by client
+const clientRejectProgress = async (req, res) => {
+  try {
+    const { workspaceId, approvalStatus, reviewStatus, rejectionReason, progressId } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace to find and update the specific progress record
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const progressArray = Array.isArray(currentWorkspace?.progress_submissions) 
+      ? currentWorkspace.progress_submissions 
+      : [];
+
+    // If progressId is provided, update that specific record; otherwise update the latest
+    const targetId = progressId || (progressArray.length > 0 ? progressArray[progressArray.length - 1].id : null);
+    
+    const updatedProgressArray = progressArray.map(progress => {
+      if (progress.id === targetId) {
+        return {
+          ...progress,
+          approvalStatus: approvalStatus || 'client_rejected',
+          reviewStatus: reviewStatus || 'client_rejected',
+          rejectionReason: rejectionReason || '',
+          clientRejectedAt: new Date().toISOString()
+        };
+      }
+      return progress;
+    });
+
+    // Update workspace
+    const updatedWorkspace = await updateWorkspace(workspaceId, {
+      progress_submissions: updatedProgressArray,
+      project_status: updatedProgressArray[updatedProgressArray.length - 1] // Keep latest as reference
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Progress rejected by client successfully',
+      data: {
+        workspaceId,
+        approvalStatus: approvalStatus || 'client_rejected'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error rejecting progress by client:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject progress',
+      error: error.message
+    });
+  }
+};
+
+// Approve project completion (PM)
+const approveProjectComplete = async (req, res) => {
+  try {
+    const { workspaceId, reviewStatus } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const projectStatus = currentWorkspace?.project_status || {};
+
+    // Update project_status with PM approval
+    const updatedProjectStatus = {
+      ...projectStatus,
+      reviewStatus: reviewStatus || 'client_approval_pending',
+      pmApprovedAt: new Date().toISOString()
+    };
+
+    // Update workspace
+    await updateWorkspace(workspaceId, {
+      project_status: updatedProjectStatus
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Project completion approved by PM',
+      data: {
+        workspaceId,
+        reviewStatus: reviewStatus || 'client_approval_pending'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error approving project completion:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve project completion',
+      error: error.message
+    });
+  }
+};
+
+// Reject project completion (PM)
+const rejectProjectComplete = async (req, res) => {
+  try {
+    const { workspaceId, reviewStatus, rejectionReason } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const projectStatus = currentWorkspace?.project_status || {};
+
+    // Update project_status with PM rejection
+    const updatedProjectStatus = {
+      ...projectStatus,
+      reviewStatus: reviewStatus || 'rejected',
+      rejectionReason: rejectionReason || '',
+      pmRejectedAt: new Date().toISOString()
+    };
+
+    // Update workspace
+    await updateWorkspace(workspaceId, {
+      project_status: updatedProjectStatus
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Project completion rejected by PM',
+      data: {
+        workspaceId,
+        reviewStatus: reviewStatus || 'rejected'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error rejecting project completion:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject project completion',
+      error: error.message
+    });
+  }
+};
+
+// Approve project completion (Client)
+const clientApproveProjectComplete = async (req, res) => {
+  try {
+    const { workspaceId, reviewStatus } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const projectStatus = currentWorkspace?.project_status || {};
+
+    // Update project_status with client approval - mark as complete
+    const updatedProjectStatus = {
+      ...projectStatus,
+      status: 'completed',
+      reviewStatus: reviewStatus || 'complete',
+      clientApprovedAt: new Date().toISOString()
+    };
+
+    // Update workspace
+    await updateWorkspace(workspaceId, {
+      project_status: updatedProjectStatus
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Project marked as complete',
+      data: {
+        workspaceId,
+        reviewStatus: reviewStatus || 'complete'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error approving project completion by client:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve project completion',
+      error: error.message
+    });
+  }
+};
+
+// Reject project completion (Client)
+const clientRejectProjectComplete = async (req, res) => {
+  try {
+    const { workspaceId, reviewStatus, rejectionReason } = req.body;
+
+    if (!workspaceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workspace ID is required'
+      });
+    }
+
+    // Get current workspace
+    const currentWorkspace = await getWorkspaceById(workspaceId);
+    const projectStatus = currentWorkspace?.project_status || {};
+
+    // Update project_status with client rejection
+    const updatedProjectStatus = {
+      ...projectStatus,
+      reviewStatus: reviewStatus || 'client_rejected',
+      rejectionReason: rejectionReason || '',
+      clientRejectedAt: new Date().toISOString()
+    };
+
+    // Update workspace
+    await updateWorkspace(workspaceId, {
+      project_status: updatedProjectStatus
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Project completion rejected by client',
+      data: {
+        workspaceId,
+        reviewStatus: reviewStatus || 'client_rejected'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error rejecting project completion by client:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject project completion',
       error: error.message
     });
   }

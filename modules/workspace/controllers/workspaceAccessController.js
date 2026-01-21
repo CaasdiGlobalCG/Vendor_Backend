@@ -404,6 +404,20 @@ async function createNewCollaborativeWorkspace(projectId, pmId, vendorId, leadId
     }).promise();
 
     const project = projectResult.Item;
+    
+    // Get clientId from project
+    const clientId = project?.clientId || null;
+    
+    // Build sharedWith and collaborators list
+    const sharedWithList = [vendorId];
+    const collaboratorsList = [vendorId];
+    
+    if (clientId) {
+      sharedWithList.push(clientId);
+      collaboratorsList.push(clientId);
+      console.log('✅ Added client to new collaborative workspace:', clientId);
+    }
+    
     const workspaceId = uuidv4();
 
     const workspaceData = {
@@ -412,22 +426,26 @@ async function createNewCollaborativeWorkspace(projectId, pmId, vendorId, leadId
       title: `${project?.name || 'Project'} - Collaborative Workspace`,
       description: `PM-Vendor collaborative workspace for ${project?.name || 'project'}`,
       
-      // Set PM as owner, vendor as collaborator
+      // Set PM as owner, vendor and client as collaborators
       vendorId: pmId, // For compatibility with existing system
       isShared: true,
-      sharedWith: [vendorId],
+      sharedWith: sharedWithList,
       
       // RBAC settings
       accessControl: {
         owner: pmId,
-        collaborators: [vendorId],
+        collaborators: collaboratorsList,
         permissions: {
-          canEdit: [pmId], // PM can edit everything
-          canComment: [pmId, vendorId], // Both can comment
-          canViewFiles: [pmId, vendorId], // Both can view files
+          canEdit: [pmId], // Only PM can edit canvas
+          canComment: [pmId, vendorId, ...(clientId ? [clientId] : [])], // All can comment
+          canViewFiles: [pmId, vendorId, ...(clientId ? [clientId] : [])], // All can view files
           canCreateTasks: [pmId], // Only PM can create tasks
           canAssignTasks: [pmId], // Only PM can assign tasks
-          canUpdateTaskStatus: [vendorId] // Vendor can update task status
+          canUpdateTaskStatus: [vendorId], // Only vendor can update task status
+          canAddNotes: [vendorId, ...(clientId ? [clientId] : [])], // Vendor and client can add notes to elements
+          canApproveElements: [pmId, ...(clientId ? [clientId] : [])], // PM and client can approve/reject elements
+          canAccessMessages: [pmId, vendorId, ...(clientId ? [clientId] : [])], // All have full message access
+          canAccessVideoCall: [pmId, vendorId, ...(clientId ? [clientId] : [])] // All have full video call access
         }
       },
 
@@ -446,6 +464,7 @@ async function createNewCollaborativeWorkspace(projectId, pmId, vendorId, leadId
       projectMetadata: {
         pmId,
         projectName: project?.name,
+        clientId,
         leadId,
         createdBy: 'pm_approval_system'
       },

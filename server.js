@@ -21,6 +21,7 @@ import ocrRoutes from './routes/ocrRoutes.js'; // OCR routes for cheque processi
 import dynamoActivityRoutes from './routes/dynamoActivityRoutes.js';
 import messageFileRoutes from './routes/messageFileRoutes.js';
 import chimeRoutes from './routes/chimeRoutes.js';
+import callRoutes from './routes/callRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import trunkyRoutes from './routes/trunkyRoutes.js';
 import customersRoutes from './routes/customersRoutes.js';
@@ -65,6 +66,18 @@ const allowedOrigins = Array.from(
 
 // Create HTTP server (needed for WebSocket)
 const server = http.createServer(app);
+
+// Debug: Log ALL requests to the server
+server.on('request', (req, res) => {
+  if (req.url.includes('notifications/ws')) {
+    console.log(`🔍 HTTP Request (not upgrade): ${req.method} ${req.url}`);
+  }
+});
+
+// Debug: Log connection events
+server.on('connection', (socket) => {
+  console.log('📡 New TCP connection established');
+});
 
 
 // Connect to MongoDB (still needed for GoogleUser model)
@@ -201,7 +214,8 @@ app.use('/api/auth/passkey', passkeyRoutes); // Passkey MFA routes
 app.use('/api/files', fileRoutes); // File upload/delete routes
 app.use('/api', dynamoActivityRoutes); // Activities routes
 app.use('/api/message-files', messageFileRoutes); // Message File Upload routes
-app.use('/api/chime', chimeRoutes); // Amazon Chime Video Call routes
+app.use('/api/chime', chimeRoutes); // Amazon Chime Video Call routes (old)
+app.use('/api/calls', callRoutes); // Video Call Management routes (new)
 app.use('/api/notifications', notificationRoutes); // Notifications routes
 app.use('/api/trunky', trunkyRoutes); // Trunky Task Management routes
 app.use('/api/customers', customersRoutes); // Customers routes
@@ -219,9 +233,16 @@ app.use((err, req, res, next) => {
 const wss = initWebSocketServer(server);
 console.log('✅ WebSocket server initialized');
 
+// Log the port that will be used
+if (!PORT) {
+  console.error('❌ ERROR: PORT is not defined! Check VENDOR_BACKEND_PORT in .env');
+  process.exit(1);
+}
+console.log(`📍 Server will listen on port: ${PORT}`);
+
 // Load modules and start server
 loadModules().then(() => {
-  server.listen(PORT, () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ VendorDashboard Backend running on port ${PORT}`);
     const healthUrl = isProd ? 'https://caasdiglobal.in/health' : `http://localhost:${PORT}/health`;
     console.log(`📊 Health check: ${healthUrl}`);

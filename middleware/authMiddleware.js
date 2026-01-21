@@ -109,8 +109,11 @@ export const authenticateUser = async (req, res, next) => {
           id: userInfo.vendorId || userInfo.pmId,
           email: userInfo.email,
           role: userInfo.role || (userInfo.vendorId ? 'vendor' : 'pm'),
-          name: userInfo.name
+          name: userInfo.name,
+          pmId: userInfo.pmId,
+          vendorId: userInfo.vendorId
         };
+        console.log('🔐 Created user from x-user-info header:', user);
       } catch (error) {
         console.error('Error parsing user info header:', error);
       }
@@ -126,7 +129,19 @@ export const authenticateUser = async (req, res, next) => {
         vendorId: userInfo.vendorId,
         phone: userInfo.phone || ''
       };
-      console.log('🔐 Created user from x-user-info:', user);
+      console.log('🔐 Created vendor user from x-user-info:', user);
+    }
+    
+    // If no user found in other methods, try to create PM user from user info header
+    if (!user && userInfo.pmId) {
+      user = {
+        id: userInfo.pmId,
+        email: userInfo.email || `${userInfo.pmId}@pm.com`,
+        role: 'pm',
+        name: userInfo.name || `PM ${userInfo.pmId}`,
+        pmId: userInfo.pmId
+      };
+      console.log('🔐 Created PM user from x-user-info:', user);
     }
     
     // If still no user, return 401
@@ -183,6 +198,19 @@ export const requirePM = (req, res, next) => {
     return res.status(403).json({
       success: false,
       message: 'Access denied. PM role required.'
+    });
+  }
+  next();
+};
+
+/**
+ * Middleware to check if user is a client
+ */
+export const requireClient = (req, res, next) => {
+  if (req.user?.role !== 'client') {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Client role required.'
     });
   }
   next();
