@@ -30,6 +30,7 @@ import turnkeyWorkflowRoutes from './routes/turnkeyWorkflowRoutes.js';
 import postServiceRoutes from './modules/post-services/routes/postServiceRoutes.js'; // New import for Post Services routes
 import postServiceNotificationRoutes from './modules/post-services/routes/notificationRoutes.js'; // New import for Post Services Notifications routes
 import dashboardRoutes from './routes/dashboard.routes.js';
+import copilotRoutes from './routes/copilotRoutes.js'; // Copilot routes
 import { getWorkspacePurchaseOrders } from './modules/workspace/controllers/workspacePurchaseOrdersController.js';
 import sendProgressEmailRoutes from './routes/sendProgressEmail.js'; // Import sendProgressEmail route
 import handoffRoutes from './routes/handoffRoutes.js';
@@ -151,6 +152,7 @@ app.get('/api/workspace/purchase-orders', async (req, res, next) => {
 app.use('/api/s3', s3Routes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/ocr', ocrRoutes); // OCR routes for cheque processing
+app.use('/api/copilot', copilotRoutes); // Copilot routes
 
 
 // === Load Modular Routes ===

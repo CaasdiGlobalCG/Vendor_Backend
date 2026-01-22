@@ -28,18 +28,12 @@ export const processCheque = async (req, res) => {
     }
 
     const { userEmail } = req.body;
-    if (!userEmail) {
-      return res.status(400).json({
-        success: false,
-        error: 'User email is required',
-        code: 'NO_EMAIL'
-      });
-    }
+    const email = userEmail || 'unknown';
 
     // Validate image file
     const validation = validateImageFile(req.file);
     if (!validation.valid) {
-      logger.warn(`Invalid file for user ${userEmail}:`, validation.errors);
+      logger.warn(`Invalid file for user ${email}:`, validation.errors);
       return res.status(400).json({
         success: false,
         error: validation.errors.join('; '),
@@ -47,7 +41,7 @@ export const processCheque = async (req, res) => {
       });
     }
 
-    logger.info(`Processing cheque for user: ${userEmail}, File: ${req.file.originalname}`);
+    logger.info(`Processing cheque for user: ${email}, File: ${req.file.originalname}`);
 
     // Process with AWS Textract
     const textractResult = await processChequeWithTextract(
@@ -70,12 +64,12 @@ export const processCheque = async (req, res) => {
     const documentConfidence = calculateDocumentConfidence(textractResult.data);
 
     logger.info(
-      `Successfully processed cheque for ${userEmail}. Blocks: ${blocks.length}, Confidence: ${documentConfidence}%`
+      `Successfully processed cheque for ${email}. Blocks: ${blocks.length}, Confidence: ${documentConfidence}%`
     );
 
     // Log for audit trail
     logOCRActivity({
-      userEmail,
+      userEmail: email,
       fileName: req.file.originalname,
       fileSize: req.file.size,
       blocksExtracted: blocks.length,
