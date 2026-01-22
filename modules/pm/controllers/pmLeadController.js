@@ -674,3 +674,109 @@ export const getVendorDirectory = async (req, res) => {
     });
   }
 };
+
+// PM: Reject lead with reason and create negotiation history entry
+export const rejectLeadWithReason = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { pmId } = req.pmUser;
+    const { rejectionReason, feedback } = req.body;
+
+    console.log('❌ PM rejecting lead with reason:', { leadId, rejectionReason, pmId });
+
+    // Validation
+    if (!rejectionReason || rejectionReason.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rejection reason is required'
+      });
+    }
+
+    // Get lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify PM owns this lead
+    if (lead.pmId !== pmId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    // Only allow rejection from vendor_accepted status or during negotiation
+    if (!['vendor_accepted', 'pm_rejected_for_revision'].includes(lead.status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Lead can only be rejected from vendor_accepted or revision pending status'
+      });
+    }
+
+    const now = new Date().toISOString();
+    const currentVersion = lead.leadVersion || 1;
+
+    // Initialize negotiation history if it doesn't exist
+    const negotiationHistory = lead.negotiationHistory || [];
+
+    // Add current rejection to history
+    negotiationHistory.push({
+      version: currentVersion,
+      action: 'pm_rejected',
+      rejectionReason: rejectionReason,
+      feedback: feedback || '',
+      rejectedAt: now,
+      vendorResponse: lead.vendorResponse || null
+    });
+
+    // Update lead with rejection and negotiation history, and send back to vendor
+    const updateParams = {
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId },
+      UpdateExpression: 'SET #status = :status, rejectionReason = :rejectionReason, negotiationHistory = :history, leadVersion = :version, updatedAt = :updatedAt, lastResentAt = :now',
+      ExpressionAttributeNames: {
+        '#status': 'status'
+      },
+      ExpressionAttributeValues: {
+        ':status': 'sent',
+        ':rejectionReason': rejectionReason,
+        ':history': negotiationHistory,
+        ':version': currentVersion,
+        ':updatedAt': now,
+        ':now': now
+      }
+    };
+
+    await dynamoDB.update(updateParams).promise();
+
+    console.log(`✅ Lead ${leadId} rejected with reason and sent back to vendor`);
+
+    res.json({
+      success: true,
+      message: 'Lead rejected with reason and sent back to vendor for revision.',
+      leadId,
+      status: 'sent',
+      rejectionReason,
+      leadVersion: currentVersion,
+      negotiationHistory
+    });
+
+  } catch (error) {
+    console.error('❌ Error rejecting lead with reason:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject lead with reason'
+    });
+  }
+};
+

@@ -6,19 +6,40 @@ const connectedUsers = {};
 
 // Initialize WebSocket server
 export const initWebSocketServer = (server) => {
+    console.log('🔌 Initializing WebSocket server...');
+    
     const wss = new WebSocketServer({ 
-        noServer: true,
-        path: '/api/notifications/ws'
+        noServer: true
     });
     
-    // Handle upgrade
+    console.log('🔌 WebSocket server instance created');
+    
+    // Handle upgrade - register this FIRST before anything else
     server.on('upgrade', (request, socket, head) => {
+        console.log('========================================');
+        console.log('🔌 UPGRADE EVENT RECEIVED!');
+        console.log('🔌 URL:', request.url);
+        console.log('🔌 Headers:', JSON.stringify(request.headers, null, 2));
+        console.log('========================================');
+        
         const pathname = url.parse(request.url).pathname;
         
-        if (pathname.startsWith('/api/notifications/ws')) {
-            wss.handleUpgrade(request, socket, head, (ws) => {
-                wss.emit('connection', ws, request);
-            });
+        try {
+            if (pathname.startsWith('/api/notifications/ws')) {
+                console.log('✅ Path matched! Handling WebSocket upgrade...');
+                wss.handleUpgrade(request, socket, head, (ws) => {
+                    console.log('✅ WebSocket connection upgraded successfully!');
+                    wss.emit('connection', ws, request);
+                });
+            } else {
+                console.log('❌ WebSocket upgrade path not matched:', pathname);
+                socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+                socket.destroy();
+            }
+        } catch (error) {
+            console.error('❌ Error during WebSocket upgrade:', error);
+            socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+            socket.destroy();
         }
     });
     
@@ -94,6 +115,16 @@ export const initWebSocketServer = (server) => {
         ws.on('error', (error) => {
             console.error(`WebSocket: Error for ${userType} ${userId}:`, error);
         });
+    });
+    
+    // WebSocket server error handling
+    wss.on('error', (error) => {
+        console.error('🔌 WebSocket server error:', error);
+    });
+    
+    // Add error handler to the server itself
+    server.on('error', (error) => {
+        console.error('🔌 Server error:', error);
     });
     
     // Return the WebSocket server
@@ -288,6 +319,43 @@ export const notifyVendorOfNewLead = (vendorId, leadData) => {
     };
 
     console.log(`🔔 Notifying vendor ${vendorId} of new lead:`, notification);
+    sendNotificationToUser(vendorId, notification);
+};
+
+// Send notification when PM updates and resends a lead (negotiation)
+export const notifyVendorOfUpdatedLead = (vendorId, leadData) => {
+    const notification = {
+        id: `updated-lead-${leadData.leadId}-${Date.now()}`,
+        type: 'updated_lead',
+        title: '🔄 Lead Updated and Resent',
+        message: `The lead "${leadData.leadTitle}" has been updated and resent for your review`,
+        data: {
+            leadId: leadData.leadId,
+            projectId: leadData.projectId,
+            pmId: leadData.pmId,
+            leadTitle: leadData.leadTitle,
+            leadVersion: leadData.leadVersion,
+            rejectionReason: leadData.rejectionReason,
+            message: leadData.message
+        },
+        timestamp: new Date().toISOString(),
+        priority: 'high',
+        actionRequired: true,
+        actions: [
+            {
+                type: 'respond',
+                label: 'Review & Respond',
+                url: '/VendorDashboard/leads'
+            },
+            {
+                type: 'view',
+                label: 'View Details',
+                url: '/VendorDashboard/leads'
+            }
+        ]
+    };
+
+    console.log(`🔔 Notifying vendor ${vendorId} of updated lead:`, notification);
     sendNotificationToUser(vendorId, notification);
 };
 

@@ -227,6 +227,19 @@ export const updateWorkspace = async (id, workspaceData) => {
   console.log('📦 DynamoDB: Nodes count in update:', cleanWorkspaceData.nodes?.length || 0);
   if (cleanWorkspaceData.nodes?.length > 0) {
     console.log('📦 DynamoDB: First node sample:', JSON.stringify(cleanWorkspaceData.nodes[0], null, 2));
+    // Log approval status for nodes that have it
+    const nodesWithApproval = cleanWorkspaceData.nodes.filter(n => n.data?.approvalStatus);
+    console.log('🔍 DynamoDB: Nodes with approval status:', nodesWithApproval.length);
+    nodesWithApproval.forEach((node, idx) => {
+      console.log(`  Node ${idx}:`, {
+        id: node.id,
+        approvalStatus: node.data?.approvalStatus,
+        hasPmApproval: !!node.data?.pmApproval,
+        hasClientApproval: !!node.data?.clientApproval,
+        pmApprovalObj: node.data?.pmApproval,
+        clientApprovalObj: node.data?.clientApproval
+      });
+    });
   }
 
   const params = {
@@ -269,6 +282,21 @@ export const updateWorkspace = async (id, workspaceData) => {
         if (verifyResult.Item) {
           console.log('🔍 DynamoDB: Verification - nodes count in DB:', verifyResult.Item.nodes?.length || 0);
           console.log('🔍 DynamoDB: Verification - nodes type:', Array.isArray(verifyResult.Item.nodes) ? 'Array' : typeof verifyResult.Item.nodes);
+          
+          // Check approval objects in verified data
+          const verifiedNodesWithApproval = verifyResult.Item.nodes?.filter(n => n.data?.approvalStatus) || [];
+          console.log('🔍 DynamoDB: Verified nodes with approval:', verifiedNodesWithApproval.length);
+          verifiedNodesWithApproval.forEach((node, idx) => {
+            console.log(`  Verified Node ${idx}:`, {
+              id: node.id,
+              approvalStatus: node.data?.approvalStatus,
+              hasPmApproval: !!node.data?.pmApproval,
+              hasClientApproval: !!node.data?.clientApproval,
+              pmApprovalObj: node.data?.pmApproval,
+              clientApprovalObj: node.data?.clientApproval
+            });
+          });
+          
           if (verifyResult.Item.nodes?.length !== cleanWorkspaceData.nodes?.length) {
             console.error('❌ DynamoDB: VERIFICATION FAILED! Nodes not persisted!');
             console.error('❌ DynamoDB: Expected:', cleanWorkspaceData.nodes?.length, 'Got in DB:', verifyResult.Item.nodes?.length);

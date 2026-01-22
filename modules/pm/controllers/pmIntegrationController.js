@@ -2,6 +2,7 @@ import * as DynamoWorkspace from '../../workspace/models/DynamoWorkspace.js';
 import * as DynamoLead from '../models/DynamoLead.js';
 import { sendLeadNotification } from '../../../websocket/notificationSocket.js';
 import { v4 as uuidv4 } from 'uuid';
+import { dynamoDB, PM_PROJECTS_TABLE } from '../../../config/aws.js';
 
 // Create workspace for PM project with vendor collaboration
 export const createWorkspaceForPM = async (req, res) => {
@@ -16,28 +17,61 @@ export const createWorkspaceForPM = async (req, res) => {
 
     console.log('🚀 PM Integration: Creating workspace for project:', projectId);
 
+    // Fetch project details to get clientId
+    console.log('📋 Fetching project details for:', projectId);
+    let clientId = null;
+    try {
+      const projectResult = await dynamoDB.get({
+        TableName: PM_PROJECTS_TABLE,
+        Key: { projectId }
+      }).promise();
+      
+      if (projectResult.Item && projectResult.Item.clientId) {
+        clientId = projectResult.Item.clientId;
+        console.log('✅ Found client:', clientId);
+      }
+    } catch (error) {
+      console.error('⚠️ Could not fetch project details:', error.message);
+    }
+
+    // Build sharedWith and collaborators list
+    const vendorIds = invitedVendors.map(v => v.vendorId);
+    const sharedWithList = [...vendorIds];
+    const collaboratorsList = [...vendorIds];
+    
+    // Add client if found
+    if (clientId) {
+      sharedWithList.push(clientId);
+      collaboratorsList.push(clientId);
+      console.log('✅ Added client to collaborators:', clientId);
+    }
+
     // Create collaborative workspace
     const workspaceData = {
       projectId,
       title: `${projectName} - Collaborative Workspace`,
       description: `PM-Vendor collaborative workspace for ${projectName}`,
       
-      // Set PM as owner, vendors as collaborators
+      // Set PM as owner, vendors and client as collaborators
       vendorId: pmId, // For compatibility with existing system
       isShared: true,
-      sharedWith: invitedVendors.map(v => v.vendorId),
+      sharedWith: sharedWithList,
       
       // RBAC settings
       accessControl: {
         owner: pmId,
-        collaborators: invitedVendors.map(v => v.vendorId),
+        collaborators: collaboratorsList,
         permissions: {
-          canEdit: [pmId], // PM can edit everything
-          canComment: [pmId, ...invitedVendors.map(v => v.vendorId)], // All can comment
-          canViewFiles: [pmId, ...invitedVendors.map(v => v.vendorId)], // All can view files
+          canEdit: [pmId], // Only PM can edit canvas
+          canComment: [pmId, ...vendorIds, ...(clientId ? [clientId] : [])], // All can comment
+          canViewFiles: [pmId, ...vendorIds, ...(clientId ? [clientId] : [])], // All can view files
           canCreateTasks: [pmId], // Only PM can create tasks
           canAssignTasks: [pmId], // Only PM can assign tasks
-          canUpdateTaskStatus: invitedVendors.map(v => v.vendorId) // Vendors can update their task status
+          canUpdateTaskStatus: [...vendorIds], // Only vendors can update task status
+          canAddNotes: [...vendorIds, ...(clientId ? [clientId] : [])], // Vendors and client can add notes to elements
+          canApproveElements: [pmId, ...(clientId ? [clientId] : [])], // PM and client can approve/reject elements
+          canAccessMessages: [pmId, ...vendorIds, ...(clientId ? [clientId] : [])], // All have full message access
+          canAccessVideoCall: [pmId, ...vendorIds, ...(clientId ? [clientId] : [])] // All have full video call access
         }
       },
 
@@ -49,6 +83,7 @@ export const createWorkspaceForPM = async (req, res) => {
       projectMetadata: {
         pmId,
         projectName,
+        clientId,
         invitedVendors,
         workspaceTemplate,
         createdBy: 'pm_system'

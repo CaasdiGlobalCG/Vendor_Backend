@@ -443,13 +443,11 @@ export const updateSubtaskCanvas = async (req, res) => {
     updatedTasks[taskIndex].subtasks[subtaskIndex].updatedAt = new Date().toISOString();
     updatedTasks[taskIndex].updatedAt = new Date().toISOString();
     
-    // Also update the workspace's main nodes array to ensure it's always in sync
-    // This ensures that elements added to the canvas are stored in the workspace's nodes array
+    // Only update the tasks array, NOT the workspace's main nodes/edges
+    // Each subtask should have its own independent canvasData
+    // DO NOT copy subtask nodes to workspace nodes as this causes elements from one subtask to appear in others
     const workspaceUpdateData = {
-      tasks: updatedTasks,
-      nodes: nodes || [],
-      edges: edges || [],
-      zoomLevel: zoomLevel || 100
+      tasks: updatedTasks
     };
     
     const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, workspaceUpdateData);
@@ -457,8 +455,8 @@ export const updateSubtaskCanvas = async (req, res) => {
     console.log('✅ Backend: Subtask canvas updated successfully', {
       nodesCount: nodes?.length || 0,
       edgesCount: edges?.length || 0,
-      workspaceNodesCount: updatedWorkspace?.nodes?.length || 0,
-      nodesWithImportant: nodes?.filter(n => n.data?.isImportant)?.length || 0
+      subtaskId,
+      taskId
     });
     
     // Verify the nodes were actually saved to DynamoDB by reading back
@@ -519,42 +517,101 @@ export const getWorkspaceCollaborators = async (req, res) => {
       return res.status(404).json({ message: 'Workspace not found' });
     }
 
-    // Get vendor details from vendors table
     const collaborators = [];
+    const clientId = workspace.projectMetadata?.clientId;
     
     if (workspace.sharedWith && workspace.sharedWith.length > 0) {
-      for (const vendorId of workspace.sharedWith) {
+      for (const userId of workspace.sharedWith) {
         try {
-          // Fetch vendor details
-          const vendorResult = await dynamoDB.get({
-            TableName: 'vendors',
-            Key: { vendorId }
-          }).promise();
-
-          if (vendorResult.Item) {
-            const vendor = vendorResult.Item;
+          // Check if this is the client
+          if (clientId && userId === clientId) {
+            console.log('👥 Found client in sharedWith:', clientId);
             
-            // Get vendor's last activity (simplified - you can enhance this)
-            const lastActivity = await getVendorLastActivity(vendorId, workspaceId);
+            // Fetch client details from clients table
+            let clientName = 'Client';
+            let clientEmail = 'client@company.com';
+            let clientCompany = 'Client Organization';
+            
+            try {
+              const clientResult = await dynamoDB.get({
+                TableName: 'clients',
+                Key: { clientId }
+              }).promise();
+
+              if (clientResult.Item) {
+                const client = clientResult.Item;
+                clientName = client.contactName || client.companyName || 'Client';
+                clientEmail = client.email || 'client@company.com';
+                clientCompany = client.companyName || 'Client Organization';
+                console.log('✅ Fetched client details:', { clientName, clientEmail, clientCompany });
+              }
+            } catch (clientError) {
+              console.warn('⚠️ Could not fetch client details from clients table:', clientError.message);
+              // Use defaults already set above
+            }
             
             collaborators.push({
-              vendorId: vendor.vendorId,
-              name: vendor.name || vendor.vendorDetails?.companyName || vendor.vendorDetails?.primaryContactName || 'Unknown Vendor',
-              email: vendor.email || vendor.vendorDetails?.primaryContactEmail || 'N/A',
-              specialization: vendor.specialization || vendor.category || vendor.companyDetails?.industryType || 'General',
-              accessLevel: workspace.accessControl?.permissions?.canEdit?.includes(vendorId) ? 'Edit' : 'View',
-              status: vendor.status === 'approved' ? 'active' : 'inactive',
-              lastActivity: lastActivity,
-              joinedAt: workspace.createdAt, // Simplified
-              avatar: (vendor.name?.charAt(0) || vendor.vendorDetails?.companyName?.charAt(0) || vendor.vendorDetails?.primaryContactName?.charAt(0) || 'V').toUpperCase()
+              vendorId: clientId,
+              name: clientName,
+              email: clientEmail,
+              specialization: clientCompany,
+              accessLevel: workspace.accessControl?.permissions?.canEdit?.includes(clientId) ? 'Edit' : 'View',
+              status: 'active',
+              lastActivity: { 
+                action: 'Added to workspace', 
+                timestamp: workspace.createdAt,
+                description: 'Client added to collaborative workspace'
+              },
+              joinedAt: workspace.createdAt,
+              avatar: (clientName?.charAt(0) || 'C').toUpperCase(),
+              isClient: true
             });
+          } else {
+            // Try to fetch vendor details
+            const vendorResult = await dynamoDB.get({
+              TableName: 'vendors',
+              Key: { vendorId: userId }
+            }).promise();
+
+            if (vendorResult.Item) {
+              const vendor = vendorResult.Item;
+              
+              // Get vendor's last activity (simplified - you can enhance this)
+              const lastActivity = await getVendorLastActivity(userId, workspaceId);
+              
+              collaborators.push({
+                vendorId: vendor.vendorId,
+                name: vendor.name || vendor.vendorDetails?.companyName || vendor.vendorDetails?.primaryContactName || 'Unknown Vendor',
+                email: vendor.email || vendor.vendorDetails?.primaryContactEmail || 'N/A',
+                specialization: vendor.specialization || vendor.category || vendor.companyDetails?.industryType || 'General',
+                accessLevel: workspace.accessControl?.permissions?.canEdit?.includes(userId) ? 'Edit' : 'View',
+                status: vendor.status === 'approved' ? 'active' : 'inactive',
+                lastActivity: lastActivity,
+                joinedAt: workspace.createdAt, // Simplified
+                avatar: (vendor.name?.charAt(0) || vendor.vendorDetails?.companyName?.charAt(0) || vendor.vendorDetails?.primaryContactName?.charAt(0) || 'V').toUpperCase()
+              });
+            } else {
+              // Not found in vendors table - might be a client or other user type
+              console.log('⚠️ User not found in vendors table:', userId);
+              collaborators.push({
+                vendorId: userId,
+                name: 'Unknown User',
+                email: 'N/A',
+                specialization: 'Unknown',
+                accessLevel: workspace.accessControl?.permissions?.canEdit?.includes(userId) ? 'Edit' : 'View',
+                status: 'inactive',
+                lastActivity: { action: 'N/A', timestamp: null },
+                joinedAt: workspace.createdAt,
+                avatar: 'U'
+              });
+            }
           }
-        } catch (vendorError) {
-          console.error(`Error fetching vendor ${vendorId}:`, vendorError.message);
-          // Add placeholder for missing vendor
+        } catch (error) {
+          console.error(`Error processing collaborator ${userId}:`, error.message);
+          // Add placeholder
           collaborators.push({
-            vendorId,
-            name: 'Unknown Vendor',
+            vendorId: userId,
+            name: 'Unknown User',
             email: 'N/A',
             specialization: 'Unknown',
             accessLevel: 'View',
