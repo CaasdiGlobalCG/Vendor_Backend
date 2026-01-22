@@ -54,7 +54,11 @@ export const getVendorLeads = async (req, res) => {
       pmDecision: lead.pmDecision,
       tags: lead.tags || [],
       // Expose BOQ attachment metadata for frontend download links
-      boqAttachment: lead.boqAttachment || null
+      boqAttachment: lead.boqAttachment || null,
+      // Include negotiation tracking fields (NEW)
+      rejectionReason: lead.rejectionReason || null,
+      negotiationHistory: lead.negotiationHistory || [],
+      leadVersion: lead.leadVersion || 1
     }));
 
     // Group by status for dashboard
@@ -63,7 +67,8 @@ export const getVendorLeads = async (req, res) => {
       vendor_accepted: leads.filter(l => l.status === 'vendor_accepted'),
       vendor_declined: leads.filter(l => l.status === 'vendor_declined'),
       pm_approved: leads.filter(l => l.status === 'pm_approved'),
-      pm_rejected: leads.filter(l => l.status === 'pm_rejected')
+      pm_rejected: leads.filter(l => l.status === 'pm_rejected'),
+      pm_rejected_for_revision: leads.filter(l => l.status === 'pm_rejected_for_revision')
     };
 
     console.log(`✅ Found ${leads.length} leads for vendor ${vendorId}`);
@@ -77,7 +82,8 @@ export const getVendorLeads = async (req, res) => {
         pending: leadsByStatus.sent.length,
         responded: leadsByStatus.vendor_accepted.length + leadsByStatus.vendor_declined.length,
         approved: leadsByStatus.pm_approved.length,
-        rejected: leadsByStatus.pm_rejected.length
+        rejected: leadsByStatus.pm_rejected.length,
+        needsRevision: leadsByStatus.pm_rejected_for_revision.length
       },
       count: leads.length,
       hasMore: !!result.LastEvaluatedKey
@@ -143,7 +149,11 @@ export const getVendorLead = async (req, res) => {
       pmDecision: lead.pmDecision,
       tags: lead.tags || [],
       // Include BOQ attachment metadata for detailed views
-      boqAttachment: lead.boqAttachment || null
+      boqAttachment: lead.boqAttachment || null,
+      // Include negotiation tracking fields (NEW)
+      rejectionReason: lead.rejectionReason || null,
+      negotiationHistory: lead.negotiationHistory || [],
+      leadVersion: lead.leadVersion || 1
     };
 
     console.log('✅ Lead details retrieved:', leadId);

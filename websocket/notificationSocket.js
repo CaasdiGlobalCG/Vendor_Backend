@@ -322,6 +322,43 @@ export const notifyVendorOfNewLead = (vendorId, leadData) => {
     sendNotificationToUser(vendorId, notification);
 };
 
+// Send notification when PM updates and resends a lead (negotiation)
+export const notifyVendorOfUpdatedLead = (vendorId, leadData) => {
+    const notification = {
+        id: `updated-lead-${leadData.leadId}-${Date.now()}`,
+        type: 'updated_lead',
+        title: '🔄 Lead Updated and Resent',
+        message: `The lead "${leadData.leadTitle}" has been updated and resent for your review`,
+        data: {
+            leadId: leadData.leadId,
+            projectId: leadData.projectId,
+            pmId: leadData.pmId,
+            leadTitle: leadData.leadTitle,
+            leadVersion: leadData.leadVersion,
+            rejectionReason: leadData.rejectionReason,
+            message: leadData.message
+        },
+        timestamp: new Date().toISOString(),
+        priority: 'high',
+        actionRequired: true,
+        actions: [
+            {
+                type: 'respond',
+                label: 'Review & Respond',
+                url: '/VendorDashboard/leads'
+            },
+            {
+                type: 'view',
+                label: 'View Details',
+                url: '/VendorDashboard/leads'
+            }
+        ]
+    };
+
+    console.log(`🔔 Notifying vendor ${vendorId} of updated lead:`, notification);
+    sendNotificationToUser(vendorId, notification);
+};
+
 // Send notification when workspace access is granted
 export const notifyWorkspaceAccessGranted = (userId, workspaceData) => {
     const notification = {
