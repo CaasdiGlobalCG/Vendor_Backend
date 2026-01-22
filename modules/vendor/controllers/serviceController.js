@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
  */
 export const getServices = async (req, res) => {
   try {
-    const { email } = req.query;
+    const email = req.auth?.email || req.query.email;
 
     if (!email) {
       return res.status(400).json({
@@ -68,7 +68,7 @@ export const addService = async (req, res) => {
     console.log('Request body:', JSON.stringify(req.body));
     console.log('Request files:', req.files ? JSON.stringify(Object.keys(req.files)) : 'No files');
 
-    const { email } = req.body;
+    const email = req.auth?.email || req.body?.email;
     const serviceData = JSON.parse(req.body.serviceData || '{}');
 
     if (!email) {
@@ -188,7 +188,8 @@ export const updateService = async (req, res) => {
       files: req.files ? Object.keys(req.files).map(key => `${key}: ${req.files[key].length} files`) : 'No files'
     });
 
-    const { email, serviceId } = req.body;
+    const email = req.auth?.email || req.body?.email;
+    const { serviceId } = req.body;
     const serviceData = JSON.parse(req.body.serviceData || '{}');
 
     if (!email || !serviceId) {
@@ -313,7 +314,8 @@ export const updateService = async (req, res) => {
  */
 export const deleteService = async (req, res) => {
   try {
-    const { email, serviceId } = req.body;
+    const email = req.auth?.email || req.body?.email;
+    const { serviceId } = req.body;
 
     if (!email || !serviceId) {
       return res.status(400).json({

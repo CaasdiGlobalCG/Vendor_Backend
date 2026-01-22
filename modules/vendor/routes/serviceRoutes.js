@@ -6,6 +6,7 @@ import {
   updateService, 
   deleteService 
 } from '../controllers/serviceController.js';
+import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
 
 const router = express.Router();
 
@@ -19,15 +20,15 @@ const serviceUploadMiddleware = upload.fields([
 ]);
 
 // Get all services for a vendor
-router.get('/services', getServices);
+router.get('/services', authenticateCognitoJwt, getServices);
 
 // Add a new service
-router.post('/services', serviceUploadMiddleware, addService);
+router.post('/services', authenticateCognitoJwt, serviceUploadMiddleware, addService);
 
 // Update an existing service
-router.put('/services', serviceUploadMiddleware, updateService);
+router.put('/services', authenticateCognitoJwt, serviceUploadMiddleware, updateService);
 
 // Delete a service
-router.delete('/services', deleteService);
+router.delete('/services', authenticateCognitoJwt, deleteService);
 
 export default router;

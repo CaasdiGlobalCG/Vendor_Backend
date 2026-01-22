@@ -347,7 +347,7 @@ export const submitVendorForm = async (req, res) => {
 
 export const getVendors = async (req, res) => {
   try {
-    const email = req.query.email;
+    const email = req.auth?.email || req.query.email;
     
     console.log(`getVendors API called with email: ${email || 'none'}`);
     

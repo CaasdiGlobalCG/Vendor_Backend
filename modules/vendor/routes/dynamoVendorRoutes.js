@@ -21,6 +21,7 @@ import {
 } from '../controllers/dynamoUserController.js';
 import * as DynamoVendor from '../models/DynamoVendor.js';
 import * as DynamoGoogleUser from '../../../models/DynamoGoogleUser.js';
+import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
 
 const router = express.Router();
 
@@ -63,7 +64,7 @@ router.post(
   submitVendorForm
 );
 
-router.get('/vendors', getVendors);
+router.get('/vendors', authenticateCognitoJwt, getVendors);
 
 // Get vendor by email (explicit endpoint)
 router.get('/vendor-by-email', async (req, res) => {
@@ -115,6 +116,101 @@ router.get('/vendor-by-email', async (req, res) => {
   } catch (error) {
     console.error('Error fetching vendor by email:', error);
     res.status(500).json({
+      success: false,
+      message: 'Error fetching vendor',
+      error: error.message
+    });
+  }
+});
+
+// Get current vendor based on authenticated JWT (secure endpoint)
+router.get('/me', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const email = req.auth?.email;
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated'
+      });
+    }
+
+    console.log(`Fetching current vendor for email: ${email}`);
+    let vendor = await DynamoVendor.getVendorByEmail(email);
+
+    // If no vendor, check for an existing Google user (fallback)
+    if (!vendor) {
+      const googleUser = await DynamoGoogleUser.getGoogleUserByEmail(email);
+      if (googleUser) {
+        vendor = {
+          id: googleUser.id,
+          _id: googleUser._id,
+          vendorId: googleUser.id,
+          email: googleUser.email,
+          name: googleUser.displayName || googleUser.email.split('@')[0],
+          status: googleUser.status || 'pending',
+          hasFilledForm: googleUser.hasFilledForm || false,
+          role: googleUser.role || 'vendor',
+          isGoogleUser: true
+        };
+      }
+    }
+
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found'
+      });
+    }
+
+    // Ensure hasFilledForm is accurate even if older records never had it set.
+    // Previously this was often computed/updated via the /vendors?email flow.
+    const hasValidValues = (obj) => {
+      if (!obj || typeof obj !== 'object') return false;
+      const values = Object.values(obj);
+      if (values.length === 0) return false;
+      const nonEmptyValues = values.filter((val) => {
+        if (typeof val === 'string') return val.trim().length > 0;
+        if (typeof val === 'object' && val !== null) return true;
+        return Boolean(val);
+      });
+      return nonEmptyValues.length >= Math.ceil(values.length * 0.7);
+    };
+
+    const computedHasFilledForm = Boolean(
+      vendor.hasFilledForm ||
+        (hasValidValues(vendor.vendorDetails) &&
+          hasValidValues(vendor.companyDetails) &&
+          hasValidValues(vendor.serviceProductDetails) &&
+          hasValidValues(vendor.bankDetails) &&
+          hasValidValues(vendor.complianceCertifications) &&
+          hasValidValues(vendor.additionalDetails) &&
+          vendor.additionalDetails?.acknowledgment === true)
+    );
+
+    if (computedHasFilledForm && !vendor.hasFilledForm && !vendor.isGoogleUser) {
+      try {
+        const nextStatus = vendor.status === 'approved' ? 'approved' : 'pending';
+        await DynamoVendor.updateVendor(vendor.id, {
+          hasFilledForm: true,
+          status: nextStatus,
+        });
+        vendor.hasFilledForm = true;
+        vendor.status = nextStatus;
+      } catch (e) {
+        console.warn('Failed to persist hasFilledForm update for vendor:', e?.message || e);
+        vendor.hasFilledForm = computedHasFilledForm;
+      }
+    } else {
+      vendor.hasFilledForm = computedHasFilledForm;
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: vendor
+    });
+  } catch (error) {
+    console.error('Error fetching current vendor:', error);
+    return res.status(500).json({
       success: false,
       message: 'Error fetching vendor',
       error: error.message
@@ -194,7 +290,7 @@ router.post('/vendors/:id/reject', rejectVendor);
 router.delete('/vendors/:id', deleteVendor);
 
 // New endpoint to check user status across collections
-router.get('/user-status', checkUserStatus);
+router.get('/user-status', authenticateCognitoJwt, checkUserStatus);
 
 // Endpoint to create a new user/vendor
 router.post('/create-user', createUser);
@@ -540,14 +636,13 @@ router.post('/test-update-vendor/:id', async (req, res) => {
 // Project endpoints
 
 // Get all projects for a vendor by email
-router.get('/projects', async (req, res) => {
+router.get('/projects', authenticateCognitoJwt, async (req, res) => {
   try {
-    const { email } = req.query;
-    
+    const email = req.auth?.email;
     if (!email) {
-      return res.status(400).json({
+      return res.status(401).json({
         success: false,
-        message: 'Email is required to fetch projects'
+        message: 'Not authenticated'
       });
     }
     
@@ -619,16 +714,16 @@ router.get('/projects/vendor/:vendorId', async (req, res) => {
 // Service endpoints
 
 // Get all services for a vendor
-router.get('/services', getServices);
+router.get('/services', authenticateCognitoJwt, getServices);
 
 // Add a new service
-router.post('/services', serviceUploadMiddleware, addService);
+router.post('/services', authenticateCognitoJwt, serviceUploadMiddleware, addService);
 
 // Update a service
-router.put('/services', serviceUploadMiddleware, updateService);
+router.put('/services', authenticateCognitoJwt, serviceUploadMiddleware, updateService);
 
 // Delete a service
-router.delete('/services', deleteService);
+router.delete('/services', authenticateCognitoJwt, deleteService);
 
 // Add a new project
 router.post('/projects', projectUploadMiddleware, async (req, res) => {

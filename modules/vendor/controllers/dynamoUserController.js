@@ -4,7 +4,7 @@ import * as DynamoGoogleUser from '../../../models/DynamoGoogleUser.js';
 // Check user status across collections
 export const checkUserStatus = async (req, res) => {
   try {
-    const { email } = req.query;
+    const email = req.auth?.email || req.query.email;
     
     if (!email) {
       return res.status(400).json({ success: false, message: 'Email is required' });
@@ -109,7 +109,9 @@ export const checkUserStatus = async (req, res) => {
 // Create a new user/vendor
 export const createUser = async (req, res) => {
   try {
-    const { email, name, status = 'pending', hasFilledForm = false, role = 'vendor', googleId = null } = req.body;
+    const bodyEmail = req.body?.email;
+    const email = req.auth?.email || bodyEmail;
+    const { name, status = 'pending', hasFilledForm = false, role = 'vendor', googleId = null } = req.body;
     
     if (!email) {
       return res.status(400).json({ success: false, message: 'Email is required' });

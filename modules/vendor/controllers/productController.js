@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
  */
 export const getProducts = async (req, res) => {
   try {
-    const { email } = req.query;
+    const email = req.auth?.email || req.query.email;
 
     if (!email) {
       return res.status(400).json({
@@ -64,7 +64,7 @@ export const addProduct = async (req, res) => {
       files: req.files ? Object.keys(req.files).map(key => `${key}: ${req.files[key].length} files`) : 'No files'
     });
 
-    const { email } = req.body;
+    const email = req.auth?.email || req.body?.email;
     const productData = JSON.parse(req.body.productData || '{}');
 
     if (!email) {
@@ -183,7 +183,8 @@ export const updateProduct = async (req, res) => {
       files: req.files ? Object.keys(req.files).map(key => `${key}: ${req.files[key].length} files`) : 'No files'
     });
 
-    const { email, productId } = req.body;
+    const email = req.auth?.email || req.body?.email;
+    const { productId } = req.body;
     const productData = JSON.parse(req.body.productData || '{}');
 
     if (!email || !productId) {
@@ -308,7 +309,8 @@ export const updateProduct = async (req, res) => {
  */
 export const deleteProduct = async (req, res) => {
   try {
-    const { email, productId } = req.body;
+    const email = req.auth?.email || req.body?.email;
+    const { productId } = req.body;
 
     if (!email || !productId) {
       return res.status(400).json({

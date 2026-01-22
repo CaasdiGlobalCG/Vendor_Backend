@@ -6,6 +6,7 @@ import {
   updateProduct, 
   deleteProduct 
 } from '../controllers/productController.js';
+import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
 
 const router = express.Router();
 
@@ -20,15 +21,15 @@ const productUploadMiddleware = upload.fields([
 ]);
 
 // Get all products for a vendor
-router.get('/products', getProducts);
+router.get('/products', authenticateCognitoJwt, getProducts);
 
 // Add a new product
-router.post('/products', productUploadMiddleware, addProduct);
+router.post('/products', authenticateCognitoJwt, productUploadMiddleware, addProduct);
 
 // Update an existing product
-router.put('/products', productUploadMiddleware, updateProduct);
+router.put('/products', authenticateCognitoJwt, productUploadMiddleware, updateProduct);
 
 // Delete a product
-router.delete('/products', deleteProduct);
+router.delete('/products', authenticateCognitoJwt, deleteProduct);
 
 export default router;

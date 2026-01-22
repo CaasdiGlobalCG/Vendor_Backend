@@ -31,6 +31,7 @@ import postServiceNotificationRoutes from './modules/post-services/routes/notifi
 import dashboardRoutes from './routes/dashboard.routes.js';
 import { getWorkspacePurchaseOrders } from './modules/workspace/controllers/workspacePurchaseOrdersController.js';
 import sendProgressEmailRoutes from './routes/sendProgressEmail.js'; // Import sendProgressEmail route
+import handoffRoutes from './routes/handoffRoutes.js';
 
 // Import WebSocket initialization
 import { initWebSocketServer } from './websocket/notificationSocket.js';
@@ -197,6 +198,7 @@ async function loadModules() {
 
 // === Non-modular API Routes ===
 app.use('/api/auth', dynamoAuthRoutes); // Google login/callback/set-role
+app.use('/api/auth', handoffRoutes); // one-time token handoff (single-login cross-domain)
 app.use('/api/auth/passkey', passkeyRoutes); // Passkey MFA routes
 app.use('/api/files', fileRoutes); // File upload/delete routes
 app.use('/api', dynamoActivityRoutes); // Activities routes

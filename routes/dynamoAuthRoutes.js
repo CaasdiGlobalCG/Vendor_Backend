@@ -296,26 +296,61 @@ router.post("/set-role", async (req, res) => {
 
 // Verify authentication
 router.get("/verify", async (req, res) => {
-  if (req.isAuthenticated() && req.user) {
-    console.log("Verify endpoint, user:", req.user);
-    if (req.user.email) {
-      const dynamoUser = await DynamoGoogleUser.getGoogleUserByEmail(req.user.email);
-      if (dynamoUser) {
-        return res.json({
-          googleId: dynamoUser.googleId,
-          email: dynamoUser.email,
-          role: dynamoUser.role || 'vendor',
-          roleSelected: dynamoUser.roleSelected === true,
-          source: 'dynamodb'
+  const buildUserVerifyPayload = async ({ email, displayNameFallback, roleFallback }) => {
+    if (!email) {
+      return {
+        email: null,
+        role: roleFallback || 'vendor',
+        lastSelectedRole: null,
+        roleSelected: false,
+        source: 'users'
+      };
+    }
+
+    let userRecord = null;
+    try {
+      userRecord = await DynamoUser.getUserByEmail(email);
+    } catch (e) {
+      console.warn('[verify] DynamoUser.getUserByEmail failed:', e?.message);
+    }
+
+    if (!userRecord) {
+      try {
+        userRecord = await DynamoUser.createUser({
+          email,
+          displayName: displayNameFallback || email.split('@')[0],
+          lastSelectedRole: null,
+          status: 'pending',
+          hasFilledForm: false,
+          roleSelected: false
         });
+      } catch (e) {
+        console.warn('[verify] DynamoUser.createUser failed:', e?.message);
       }
     }
-    return res.json({
-      googleId: req.user.googleId,
-      email: req.user.email,
-      role: req.user.role || 'vendor',
-      source: 'dynamodb'
+
+    const lastSelectedRole = userRecord?.lastSelectedRole || null;
+    const roleSelected = userRecord?.roleSelected === true;
+    const role = (lastSelectedRole || roleFallback || 'vendor');
+
+    return {
+      email,
+      role,
+      lastSelectedRole,
+      roleSelected,
+      source: 'users'
+    };
+  };
+
+  if (req.isAuthenticated() && req.user) {
+    console.log("Verify endpoint (session), user:", req.user);
+    const email = req.user.email;
+    const payload = await buildUserVerifyPayload({
+      email,
+      displayNameFallback: req.user.displayName,
+      roleFallback: req.user.role
     });
+    return res.json(payload);
   }
   const token = req.headers.authorization?.split(" ")[1];
   if (token) {
@@ -335,33 +370,13 @@ router.get("/verify", async (req, res) => {
           else resolve(decoded);
         });
       });
-      const userId = decoded.sub;
-      let dynamoUser = await DynamoGoogleUser.getGoogleUserByEmail(decoded.email);
-      if (!dynamoUser) {
-        console.log("User not found in DynamoDB, creating new user with email:", decoded.email);
-        const newUserData = {
-          cognitoId: userId,
-          googleId: null,
-          email: decoded.email,
-          displayName: decoded.name || decoded.email.split('@')[0],
-          role: 'vendor',
-          status: 'pending',
-          hasFilledForm: false,
-          roleSelected: false
-        };
-        dynamoUser = await DynamoGoogleUser.createGoogleUser(newUserData);
-        console.log("Created new user in DynamoDB:", dynamoUser);
-      }
-      if (dynamoUser) {
-        return res.json({
-          googleId: dynamoUser.googleId || null,
-          email: dynamoUser.email,
-          role: dynamoUser.role || 'vendor',
-          roleSelected: dynamoUser.roleSelected === true,
-          source: 'dynamodb'
-        });
-      }
-      return res.status(404).json({ error: "User not found and could not be created" });
+      const email = decoded?.email;
+      const payload = await buildUserVerifyPayload({
+        email,
+        displayNameFallback: decoded?.name,
+        roleFallback: 'vendor'
+      });
+      return res.json(payload);
     } catch (err) {
       console.error("Error verifying token:", err.stack);
       return res.status(401).json({ error: "Not authenticated" });
