@@ -443,13 +443,11 @@ export const updateSubtaskCanvas = async (req, res) => {
     updatedTasks[taskIndex].subtasks[subtaskIndex].updatedAt = new Date().toISOString();
     updatedTasks[taskIndex].updatedAt = new Date().toISOString();
     
-    // Also update the workspace's main nodes array to ensure it's always in sync
-    // This ensures that elements added to the canvas are stored in the workspace's nodes array
+    // Only update the tasks array, NOT the workspace's main nodes/edges
+    // Each subtask should have its own independent canvasData
+    // DO NOT copy subtask nodes to workspace nodes as this causes elements from one subtask to appear in others
     const workspaceUpdateData = {
-      tasks: updatedTasks,
-      nodes: nodes || [],
-      edges: edges || [],
-      zoomLevel: zoomLevel || 100
+      tasks: updatedTasks
     };
     
     const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, workspaceUpdateData);
@@ -457,8 +455,8 @@ export const updateSubtaskCanvas = async (req, res) => {
     console.log('✅ Backend: Subtask canvas updated successfully', {
       nodesCount: nodes?.length || 0,
       edgesCount: edges?.length || 0,
-      workspaceNodesCount: updatedWorkspace?.nodes?.length || 0,
-      nodesWithImportant: nodes?.filter(n => n.data?.isImportant)?.length || 0
+      subtaskId,
+      taskId
     });
     
     // Verify the nodes were actually saved to DynamoDB by reading back
