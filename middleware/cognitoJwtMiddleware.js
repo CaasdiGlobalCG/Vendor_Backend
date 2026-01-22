@@ -1,5 +1,39 @@
 import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
+import { getTokenForSession } from '../utils/sessionStore.js';
+
+function getCookieValue(req, name) {
+  const cookieHeader = req.headers?.cookie;
+  if (!cookieHeader) return null;
+
+  const parts = cookieHeader.split(';').map((p) => p.trim());
+  for (const part of parts) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const key = part.slice(0, eq);
+    if (key === name) return decodeURIComponent(part.slice(eq + 1));
+  }
+  return null;
+}
+
+function getAuthTokenFromRequest(req) {
+  const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+  const cookieVal = getCookieValue(req, cookieName);
+  if (cookieVal) {
+    const looksLikeJwt = cookieVal.split('.').length === 3;
+    if (looksLikeJwt) return cookieVal;
+
+    const tokenFromSession = getTokenForSession(cookieVal);
+    if (tokenFromSession) return tokenFromSession;
+  }
+
+  const authHeader = req.headers?.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.substring('Bearer '.length);
+  }
+  return null;
+}
 
 export async function authenticateCognitoJwt(req, res, next) {
   try {
@@ -13,12 +47,10 @@ export async function authenticateCognitoJwt(req, res, next) {
       return next();
     }
 
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const token = getAuthTokenFromRequest(req);
+    if (!token) {
       return res.status(401).json({ success: false, message: 'Missing token' });
     }
-
-    const token = authHeader.substring('Bearer '.length);
     const decodedToken = jwt.decode(token, { complete: true });
     if (!decodedToken) {
       return res.status(401).json({ success: false, message: 'Invalid token' });
@@ -41,6 +73,7 @@ export async function authenticateCognitoJwt(req, res, next) {
       sub: decoded?.sub || null,
       email: decoded?.email || null,
       name: decoded?.name || null,
+      token,
     };
 
     if (!req.auth.email) {

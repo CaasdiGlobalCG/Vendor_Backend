@@ -1,6 +1,7 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
+import { createSession, getTokenForSession } from '../utils/sessionStore.js';
 
 const router = express.Router();
 
@@ -37,12 +38,127 @@ async function verifyCognitoToken(token) {
   });
 }
 
+function getCookieValue(req, name) {
+  const cookieHeader = req.headers?.cookie;
+  if (!cookieHeader) return null;
+  const parts = cookieHeader.split(';').map((p) => p.trim());
+  for (const part of parts) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const key = part.slice(0, eq);
+    if (key === name) return decodeURIComponent(part.slice(eq + 1));
+  }
+  return null;
+}
+
+function getAuthTokenFromRequest(req) {
+  const authHeader = req.headers?.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.substring('Bearer '.length);
+  }
+
+  const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+  const cookieVal = getCookieValue(req, cookieName);
+  if (!cookieVal) return null;
+  const looksLikeJwt = cookieVal.split('.').length === 3;
+  if (looksLikeJwt) return cookieVal;
+  return getTokenForSession(cookieVal);
+}
+
+// POST /api/auth/session
+// Establishes a vendor httpOnly auth cookie (sid) from a Cognito JWT.
+// Useful for migrating older clients that still hold the JWT client-side.
+router.post('/session', async (req, res) => {
+  try {
+    const authHeader = req.headers?.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing token' });
+    }
+
+    const token = authHeader.substring('Bearer '.length);
+    await verifyCognitoToken(token);
+
+    const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+    const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
+    let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';
+    let secure = sameSite === 'None';
+
+    const host = String(req.hostname || '').toLowerCase();
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    if (isLocalhost && sameSite === 'None') {
+      sameSite = 'Lax';
+      secure = false;
+    }
+
+    const configuredDomain = process.env.VENDOR_AUTH_COOKIE_DOMAIN || '';
+    const reqHost = String(req.hostname || '');
+    let cookieDomain;
+    if (configuredDomain) {
+      const normalized = configuredDomain.startsWith('.') ? configuredDomain.slice(1) : configuredDomain;
+      if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
+    }
+
+    const sid = createSession(token);
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.cookie(cookieName, sid, {
+      httpOnly: true,
+      secure,
+      sameSite,
+      domain: cookieDomain || undefined,
+      path: '/',
+    });
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[auth/session] error:', e?.message);
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+});
+
+// POST /api/auth/logout
+// Clears the vendor auth cookie.
+router.post('/logout', async (req, res) => {
+  const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+
+  const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
+  let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';
+  let secure = sameSite === 'None';
+
+  const host = String(req.hostname || '').toLowerCase();
+  const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  if (isLocalhost && sameSite === 'None') {
+    sameSite = 'Lax';
+    secure = false;
+  }
+
+  const configuredDomain = process.env.VENDOR_AUTH_COOKIE_DOMAIN || '';
+  const reqHost = String(req.hostname || '');
+  let cookieDomain;
+  if (configuredDomain) {
+    const normalized = configuredDomain.startsWith('.') ? configuredDomain.slice(1) : configuredDomain;
+    if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
+  }
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.clearCookie(cookieName, {
+    httpOnly: true,
+    secure,
+    sameSite,
+    domain: cookieDomain || undefined,
+    path: '/',
+  });
+
+  return res.json({ success: true });
+});
+
 // POST /api/auth/handoff
 // Creates a one-time code that the client app can exchange for the JWT.
 router.post('/handoff', async (req, res) => {
   try {
     cleanupExpired();
-    const token = req.headers.authorization?.split(' ')[1];
+    const token = getAuthTokenFromRequest(req);
     if (!token) return res.status(401).json({ error: 'Missing token' });
 
     const decoded = await verifyCognitoToken(token);
@@ -124,6 +240,61 @@ router.get('/handoff/exchange', async (req, res) => {
     return res.json({ success: true });
   } catch (e) {
     console.error('[handoff/exchange] error:', e?.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/auth/handoff/vendor-exchange?code=...
+// Exchanges the code and sets a vendor httpOnly auth cookie (sid → JWT stored server-side).
+router.get('/handoff/vendor-exchange', async (req, res) => {
+  try {
+    cleanupExpired();
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: 'Missing code' });
+
+    const entry = handoffStore.get(code);
+    if (!entry) return res.status(404).json({ error: 'Invalid or expired code' });
+    if (entry.expiresAt <= Date.now()) {
+      handoffStore.delete(code);
+      return res.status(404).json({ error: 'Invalid or expired code' });
+    }
+
+    handoffStore.delete(code);
+
+    const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+    const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
+    let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';
+    let secure = sameSite === 'None';
+
+    const host = String(req.hostname || '').toLowerCase();
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    if (isLocalhost && sameSite === 'None') {
+      sameSite = 'Lax';
+      secure = false;
+    }
+
+    const configuredDomain = process.env.VENDOR_AUTH_COOKIE_DOMAIN || '';
+    const reqHost = String(req.hostname || '');
+    let cookieDomain;
+    if (configuredDomain) {
+      const normalized = configuredDomain.startsWith('.') ? configuredDomain.slice(1) : configuredDomain;
+      if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
+    }
+
+    const sid = createSession(entry.token);
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.cookie(cookieName, sid, {
+      httpOnly: true,
+      secure,
+      sameSite,
+      domain: cookieDomain || undefined,
+      path: '/',
+    });
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[handoff/vendor-exchange] error:', e?.message);
     return res.status(500).json({ error: 'Server error' });
   }
 });
