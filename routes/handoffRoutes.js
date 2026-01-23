@@ -2,6 +2,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
 import { createSession, getTokenForSession } from '../utils/sessionStore.js';
+import * as DynamoUser from '../models/DynamoUser.js';
 
 const router = express.Router();
 
@@ -36,6 +37,33 @@ async function verifyCognitoToken(token) {
       else resolve(decoded);
     });
   });
+}
+
+async function upsertUsersLastSelectedRole(email, lastSelectedRole) {
+  if (!email || !lastSelectedRole) return;
+  const now = new Date().toISOString();
+  try {
+    const existing = await DynamoUser.getUserByEmail(email);
+    if (existing) {
+      await DynamoUser.updateUser(existing.userId || existing.id, {
+        lastSelectedRole,
+        lastSelectedRoleUpdatedAt: now,
+      });
+      return;
+    }
+
+    await DynamoUser.createUser({
+      email,
+      displayName: email.split('@')[0],
+      lastSelectedRole,
+      lastSelectedRoleUpdatedAt: now,
+      status: 'pending',
+      hasFilledForm: false,
+      roleSelected: false,
+    });
+  } catch (e) {
+    console.warn('[users] failed to upsert lastSelectedRole:', e?.message);
+  }
 }
 
 function getCookieValue(req, name) {
@@ -77,7 +105,7 @@ router.post('/session', async (req, res) => {
     }
 
     const token = authHeader.substring('Bearer '.length);
-    await verifyCognitoToken(token);
+    const decoded = await verifyCognitoToken(token);
 
     const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
     const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
@@ -109,6 +137,9 @@ router.post('/session', async (req, res) => {
       domain: cookieDomain || undefined,
       path: '/',
     });
+
+    // Mark that the last-used app/role for this user is vendor.
+    await upsertUsersLastSelectedRole(decoded?.email, 'vendor');
 
     return res.json({ success: true });
   } catch (e) {
@@ -282,6 +313,14 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
     }
 
     const sid = createSession(entry.token);
+
+    // Mark that the last-used app/role for this user is vendor.
+    try {
+      const decoded = await verifyCognitoToken(entry.token);
+      await upsertUsersLastSelectedRole(decoded?.email, 'vendor');
+    } catch (e) {
+      console.warn('[handoff/vendor-exchange] could not update users.lastSelectedRole:', e?.message);
+    }
 
     res.setHeader('Cache-Control', 'no-store');
     res.cookie(cookieName, sid, {

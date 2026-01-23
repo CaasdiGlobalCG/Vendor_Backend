@@ -239,11 +239,24 @@ router.post("/set-role", async (req, res) => {
 
     // Update USERS table (idempotent) and mark roleSelected=true
     try {
+      const now = new Date().toISOString();
       const existingUser = await DynamoUser.getUserByEmail(user.email);
       if (existingUser) {
-        await DynamoUser.updateUser(existingUser.userId || existingUser.id, { lastSelectedRole: role, roleSelected: true });
+        await DynamoUser.updateUser(existingUser.userId || existingUser.id, {
+          lastSelectedRole: role,
+          lastSelectedRoleUpdatedAt: now,
+          roleSelected: true
+        });
       } else {
-        await DynamoUser.createUser({ email: user.email, displayName: user.displayName, lastSelectedRole: role, status: 'pending', hasFilledForm: false, roleSelected: true });
+        await DynamoUser.createUser({
+          email: user.email,
+          displayName: user.displayName,
+          lastSelectedRole: role,
+          lastSelectedRoleUpdatedAt: now,
+          status: 'pending',
+          hasFilledForm: false,
+          roleSelected: true
+        });
       }
       console.log("lastSelectedRole updated in USERS table:", user.email, role);
     } catch (err) {
