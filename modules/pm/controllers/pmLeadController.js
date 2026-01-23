@@ -361,7 +361,9 @@ export const getProjectLeads = async (req, res) => {
       sentAt: lead.sentAt,
       updatedAt: lead.updatedAt,
       vendorResponse: lead.vendorResponse,
-      pmDecision: lead.pmDecision
+      pmDecision: lead.pmDecision,
+      pdfUrl: lead.pdfUrl,
+      vendorBoqAttachment: lead.vendorBoqAttachment
     }));
 
     // Group by status for dashboard
@@ -780,3 +782,251 @@ export const rejectLeadWithReason = async (req, res) => {
   }
 };
 
+// PM: Get vendor quotations for their own BOQ
+export const getVendorBoqQuotations = async (req, res) => {
+  try {
+    const { pmId } = req.pmUser;
+    const { leadId } = req.params;
+
+    console.log('📋 PM getting vendor BOQ quotations for lead:', leadId);
+
+    // Get lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify lead belongs to PM
+    if (lead.pmId !== pmId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    // Get vendor quotations from vendor_quotes_to_pm table that are for vendor's BOQ
+    const quotationParams = {
+      TableName: 'vendor_quotes_to_pm',
+      IndexName: 'LeadIdIndex',
+      KeyConditionExpression: 'leadId = :leadId',
+      ExpressionAttributeValues: {
+        ':leadId': leadId,
+        ':quotationType': 'vendor_boq_quotation'
+      },
+      FilterExpression: 'quotationType = :quotationType'
+    };
+
+    const quotationsResult = await dynamoDB.query(quotationParams).promise();
+
+    res.json({
+      success: true,
+      quotations: quotationsResult.Items || [],
+      lead: {
+        leadId,
+        projectId: lead.projectId,
+        projectName: lead.projectDetails?.name,
+        vendorBoqAttachment: lead.vendorBoqAttachment,
+        vendorQuotationResponse: lead.vendorQuotationResponse
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting vendor BOQ quotations:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get vendor BOQ quotations'
+    });
+  }
+};
+
+// PM: Approve vendor BOQ and quotation
+export const approveVendorBoqQuotation = async (req, res) => {
+  try {
+    const { pmId } = req.pmUser;
+    const { leadId } = req.params;
+    const { quotationId, feedback } = req.body;
+
+    console.log('✅ PM approving vendor BOQ quotation:', { leadId, quotationId });
+
+    if (!quotationId) {
+      return res.status(400).json({
+        success: false,
+        error: 'quotationId is required'
+      });
+    }
+
+    // Get lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify lead belongs to PM
+    if (lead.pmId !== pmId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    // Update quotation in vendor_quotes_to_pm table
+    const quotationUpdateParams = {
+      TableName: 'vendor_quotes_to_pm',
+      Key: { vendorId: lead.vendorId, quotationId },
+      UpdateExpression: 'SET pmReviewedAt = :now, pmFeedback = :feedback, #status = :status',
+      ExpressionAttributeNames: {
+        '#status': 'status'
+      },
+      ExpressionAttributeValues: {
+        ':now': now,
+        ':feedback': feedback || null,
+        ':status': 'pm_approved'
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const quotationResult = await dynamoDB.update(quotationUpdateParams).promise();
+
+    // Update lead status to indicate vendor BOQ/quotation is approved
+    const leadUpdateParams = {
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId },
+      UpdateExpression: 'SET vendorQuotationApprovalStatus = :status, vendorQuotationApprovedAt = :now, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':status': 'approved',
+        ':now': now
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const leadUpdateResult = await dynamoDB.update(leadUpdateParams).promise();
+
+    console.log(`✅ Vendor BOQ quotation ${quotationId} approved by PM`);
+
+    res.json({
+      success: true,
+      message: 'Vendor BOQ quotation approved successfully',
+      quotation: quotationResult.Attributes,
+      lead: leadUpdateResult.Attributes
+    });
+
+  } catch (error) {
+    console.error('❌ Error approving vendor BOQ quotation:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to approve vendor BOQ quotation'
+    });
+  }
+};
+
+// PM: Reject vendor BOQ and quotation
+export const rejectVendorBoqQuotation = async (req, res) => {
+  try {
+    const { pmId } = req.pmUser;
+    const { leadId } = req.params;
+    const { quotationId, rejectionReason } = req.body;
+
+    console.log('❌ PM rejecting vendor BOQ quotation:', { leadId, quotationId });
+
+    if (!quotationId || !rejectionReason) {
+      return res.status(400).json({
+        success: false,
+        error: 'quotationId and rejectionReason are required'
+      });
+    }
+
+    // Get lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify lead belongs to PM
+    if (lead.pmId !== pmId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    // Update quotation in vendor_quotes_to_pm table
+    const quotationUpdateParams = {
+      TableName: 'vendor_quotes_to_pm',
+      Key: { vendorId: lead.vendorId, quotationId },
+      UpdateExpression: 'SET pmReviewedAt = :now, pmFeedback = :rejectionReason, #status = :status',
+      ExpressionAttributeNames: {
+        '#status': 'status'
+      },
+      ExpressionAttributeValues: {
+        ':now': now,
+        ':rejectionReason': rejectionReason,
+        ':status': 'pm_rejected'
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const quotationResult = await dynamoDB.update(quotationUpdateParams).promise();
+
+    // Update lead status to indicate vendor BOQ/quotation is rejected
+    const leadUpdateParams = {
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId },
+      UpdateExpression: 'SET vendorQuotationApprovalStatus = :status, vendorQuotationRejectionReason = :reason, vendorQuotationRejectedAt = :now, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':status': 'rejected',
+        ':reason': rejectionReason,
+        ':now': now
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const leadUpdateResult = await dynamoDB.update(leadUpdateParams).promise();
+
+    console.log(`✅ Vendor BOQ quotation ${quotationId} rejected by PM`);
+
+    res.json({
+      success: true,
+      message: 'Vendor BOQ quotation rejected successfully',
+      quotation: quotationResult.Attributes,
+      lead: leadUpdateResult.Attributes
+    });
+
+  } catch (error) {
+    console.error('❌ Error rejecting vendor BOQ quotation:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject vendor BOQ quotation'
+    });
+  }
+};

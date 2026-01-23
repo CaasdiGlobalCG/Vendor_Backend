@@ -19,5 +19,10 @@ router.put('/:leadId/decision', pmLeadController.pmDecisionOnLead);       // PUT
 // Negotiation Flow Routes
 router.put('/:leadId/reject-with-reason', pmLeadController.rejectLeadWithReason);  // PUT /api/pm-leads/:leadId/reject-with-reason
 
+// Vendor BOQ Quotation Approval Routes
+router.get('/:leadId/vendor-boq-quotations', pmLeadController.getVendorBoqQuotations);  // GET /api/pm-leads/:leadId/vendor-boq-quotations
+router.post('/:leadId/vendor-quotation/approve', pmLeadController.approveVendorBoqQuotation);  // POST /api/pm-leads/:leadId/vendor-quotation/approve
+router.post('/:leadId/vendor-quotation/reject', pmLeadController.rejectVendorBoqQuotation);   // POST /api/pm-leads/:leadId/vendor-quotation/reject
+
 
 export default router;

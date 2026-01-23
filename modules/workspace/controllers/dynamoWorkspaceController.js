@@ -61,8 +61,8 @@ export const getWorkspaceByProjectId = async (req, res) => {
       return res.status(404).json({ message: 'Workspace not found for this project' });
     }
     // Normalize status fields for UI compatibility
-    const statusRaw = (workspace.status || '').toLowerCase();
-    const projectStatusRaw = (workspace.project_status || '').toLowerCase();
+    const statusRaw = (typeof workspace.status === 'string' ? workspace.status : '').toLowerCase();
+    const projectStatusRaw = (typeof workspace.project_status === 'string' ? workspace.project_status : '').toLowerCase();
     let normalizedStatus = workspace.status || 'Pending';
     if (statusRaw === 'project completed' || statusRaw === 'completed' || projectStatusRaw === 'project completed' || projectStatusRaw === 'completed') {
       normalizedStatus = 'Completed';

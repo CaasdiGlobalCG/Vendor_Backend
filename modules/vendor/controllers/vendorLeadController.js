@@ -742,3 +742,203 @@ export const updateLeadQuotation = async (req, res) => {
     });
   }
 };;
+
+// Vendor: Upload their own BOQ (when PM doesn't provide one)
+export const uploadVendorBoq = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { vendorId, pmId, vendorBoqUrl, vendorBoqFileName } = req.body;
+
+    console.log('📤 Vendor uploading their own BOQ - Request received:', {
+      leadId,
+      vendorId,
+      vendorBoqUrl,
+      vendorBoqFileName,
+      bodyKeys: Object.keys(req.body)
+    });
+
+    if (!vendorId || !vendorBoqUrl) {
+      console.error('❌ Missing required fields:', { vendorId, vendorBoqUrl });
+      return res.status(400).json({
+        success: false,
+        error: 'vendorId and vendorBoqUrl are required'
+      });
+    }
+
+    // Get existing lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify lead belongs to this vendor
+    if (lead.vendorId !== vendorId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    // Update lead_invitations with vendor BOQ details
+    const updateParams = {
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId },
+      UpdateExpression: 'SET vendorBoqAttachment = :vendorBoqAttachment, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':vendorBoqAttachment': {
+          fileUrl: vendorBoqUrl,
+          fileName: vendorBoqFileName,
+          uploadedBy: vendorId,
+          uploadedAt: now
+        },
+        ':now': now
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const result = await dynamoDB.update(updateParams).promise();
+
+    console.log(`✅ Vendor ${vendorId} uploaded their BOQ for lead ${leadId}`);
+    console.log('📋 Updated lead vendorBoqAttachment:', result.Attributes.vendorBoqAttachment);
+
+    res.json({
+      success: true,
+      lead: result.Attributes,
+      vendorBoqAttachment: result.Attributes.vendorBoqAttachment,
+      message: 'Vendor BOQ uploaded successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error uploading vendor BOQ:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload vendor BOQ'
+    });
+  }
+};
+
+// Vendor: Upload quotation based on their own BOQ
+export const uploadVendorQuotation = async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    const { 
+      vendorId, 
+      pmId, 
+      vendorBoqUrl, 
+      vendorQuotationUrl, 
+      vendorQuotationFileName 
+    } = req.body;
+
+    if (!vendorId || !vendorQuotationUrl || !vendorBoqUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'vendorId, vendorBoqUrl, and vendorQuotationUrl are required'
+      });
+    }
+
+    console.log('🧾 Vendor uploading quotation for their BOQ:', {
+      leadId,
+      vendorId
+    });
+
+    // Get existing lead
+    const leadResult = await dynamoDB.get({
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId }
+    }).promise();
+
+    if (!leadResult.Item) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    const lead = leadResult.Item;
+
+    // Verify lead belongs to this vendor
+    if (lead.vendorId !== vendorId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied to this lead'
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    // Store vendor quotation in vendor_quotes_to_pm table
+    const quotationId = `VQ-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    const vendorQuoteItem = {
+      vendorId,
+      quotationId,
+      leadId,
+      projectId: lead.projectId,
+      quotationType: 'vendor_boq_quotation', // Mark it as vendor-created BOQ quotation
+      vendorBoqUrl,
+      vendorQuotationUrl,
+      vendorQuotationFileName,
+      pmId: pmId || lead.pmId || null,
+      status: 'sent to pm for review',
+      sentToPmAt: now,
+      pmReviewedAt: null,
+      pmFeedback: null,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Save to vendor_quotes_to_pm table
+    await dynamoDB.put({
+      TableName: 'vendor_quotes_to_pm',
+      Item: vendorQuoteItem
+    }).promise();
+
+    console.log(`✅ Vendor quotation ${quotationId} created for vendor's BOQ`);
+
+    // Also update the lead to mark vendor quotation as submitted
+    const leadUpdateParams = {
+      TableName: LEAD_INVITATIONS_TABLE,
+      Key: { leadId },
+      UpdateExpression: 'SET vendorQuotationResponse = :vendorQuotationResponse, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':vendorQuotationResponse': {
+          vendorBoqUrl,
+          quotationUrl: vendorQuotationUrl,
+          quotationFileName: vendorQuotationFileName,
+          submittedAt: now,
+          quotationId
+        },
+        ':now': now
+      },
+      ReturnValues: 'ALL_NEW'
+    };
+
+    const leadResult2 = await dynamoDB.update(leadUpdateParams).promise();
+
+    res.status(201).json({
+      success: true,
+      quotation: vendorQuoteItem,
+      lead: leadResult2.Attributes,
+      message: 'Vendor quotation uploaded successfully and sent to PM for review'
+    });
+
+  } catch (error) {
+    console.error('❌ Error uploading vendor quotation:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload vendor quotation'
+    });
+  }
+};
+
