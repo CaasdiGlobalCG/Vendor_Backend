@@ -17,6 +17,7 @@ import passkeyRoutes from './routes/passkeyRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
 import s3Routes from './routes/s3.routes.js';  // Note the .js extension
 import ocrRoutes from './routes/ocrRoutes.js'; // OCR routes for cheque processing
+import assetsRoutes from './routes/assetsRoutes.js'; // Assets routes
 // productRoutes and serviceRoutes are now in vendor module
 import dynamoActivityRoutes from './routes/dynamoActivityRoutes.js';
 import messageFileRoutes from './routes/messageFileRoutes.js';
@@ -214,6 +215,7 @@ app.use('/api/auth', dynamoAuthRoutes); // Google login/callback/set-role
 app.use('/api/auth', handoffRoutes); // Vendor-to-client handoff routes
 app.use('/api/auth/passkey', passkeyRoutes); // Passkey MFA routes
 app.use('/api/files', fileRoutes); // File upload/delete routes
+app.use('/api/assets', assetsRoutes); // Assets upload/delete routes
 app.use('/api', dynamoActivityRoutes); // Activities routes
 app.use('/api/message-files', messageFileRoutes); // Message File Upload routes
 app.use('/api/chime', chimeRoutes); // Amazon Chime Video Call routes (old)
