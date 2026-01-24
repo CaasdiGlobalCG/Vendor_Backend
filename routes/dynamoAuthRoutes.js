@@ -240,7 +240,8 @@ router.post("/set-role", async (req, res) => {
     // Update USERS table (idempotent) and mark roleSelected=true
     try {
       const now = new Date().toISOString();
-      const existingUser = await DynamoUser.getUserByEmail(user.email);
+      const normalizedEmail = String(user.email || '').trim().toLowerCase();
+      const existingUser = await DynamoUser.getUserByEmail(normalizedEmail);
       if (existingUser) {
         await DynamoUser.updateUser(existingUser.userId || existingUser.id, {
           lastSelectedRole: role,
@@ -249,7 +250,7 @@ router.post("/set-role", async (req, res) => {
         });
       } else {
         await DynamoUser.createUser({
-          email: user.email,
+          email: normalizedEmail,
           displayName: user.displayName,
           lastSelectedRole: role,
           lastSelectedRoleUpdatedAt: now,
@@ -258,7 +259,7 @@ router.post("/set-role", async (req, res) => {
           roleSelected: true
         });
       }
-      console.log("lastSelectedRole updated in USERS table:", user.email, role);
+      console.log("lastSelectedRole updated in USERS table:", normalizedEmail, role);
     } catch (err) {
       console.warn('Failed to update USERS table, falling back to google_users:', err?.message);
       if (user?.id) {
@@ -269,7 +270,7 @@ router.post("/set-role", async (req, res) => {
     // Decide next route and ensure vendor presence if needed
     let nextRoute = "/client-onboarding";
     if (role === "vendor") {
-      const email = user.email;
+      const email = String(user.email || '').trim().toLowerCase();
       let vendor = email ? await DynamoVendor.getVendorByEmail(email) : null;
       if (!vendor && email) {
         vendor = await DynamoVendor.createVendor({ email, name: user.displayName || email.split('@')[0], status: 'pending', hasFilledForm: false });
@@ -320,9 +321,26 @@ router.get("/verify", async (req, res) => {
       };
     }
 
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    // If the user has a vendor record, treat them as vendor by default (prevents new vendor accounts
+    // from bouncing to /role-selection when they haven't explicitly selected a role yet).
+    let vendorRecord = null;
+    try {
+      vendorRecord = await DynamoVendor.getVendorByEmail(email);
+      if (!vendorRecord && normalizedEmail !== email) {
+        vendorRecord = await DynamoVendor.getVendorByEmail(normalizedEmail);
+      }
+    } catch (e) {
+      console.warn('[verify] DynamoVendor.getVendorByEmail failed:', e?.message);
+    }
+
     let userRecord = null;
     try {
       userRecord = await DynamoUser.getUserByEmail(email);
+      if (!userRecord && normalizedEmail !== email) {
+        userRecord = await DynamoUser.getUserByEmail(normalizedEmail);
+      }
     } catch (e) {
       console.warn('[verify] DynamoUser.getUserByEmail failed:', e?.message);
     }
@@ -330,15 +348,40 @@ router.get("/verify", async (req, res) => {
     if (!userRecord) {
       try {
         userRecord = await DynamoUser.createUser({
-          email,
-          displayName: displayNameFallback || email.split('@')[0],
-          lastSelectedRole: null,
+          email: normalizedEmail,
+          displayName: displayNameFallback || normalizedEmail.split('@')[0],
+          lastSelectedRole: vendorRecord ? 'vendor' : null,
+          lastSelectedRoleUpdatedAt: vendorRecord ? new Date().toISOString() : null,
           status: 'pending',
           hasFilledForm: false,
-          roleSelected: false
+          roleSelected: vendorRecord ? true : false
         });
       } catch (e) {
         console.warn('[verify] DynamoUser.createUser failed:', e?.message);
+      }
+    }
+
+    // If a vendor record exists but users.roleSelected is false, fix it up.
+    // Only set lastSelectedRole if it's missing, to avoid clobbering explicit client choice.
+    if (vendorRecord && userRecord) {
+      const needsRoleSelected = userRecord.roleSelected !== true;
+      const needsLastRole = !userRecord.lastSelectedRole;
+      if (needsRoleSelected || needsLastRole) {
+        try {
+          const updates = {
+            roleSelected: true,
+          };
+          if (needsLastRole) {
+            updates.lastSelectedRole = 'vendor';
+            updates.lastSelectedRoleUpdatedAt = new Date().toISOString();
+          }
+          const id = userRecord.userId || userRecord.id;
+          if (id) {
+            userRecord = await DynamoUser.updateUser(id, updates);
+          }
+        } catch (e) {
+          console.warn('[verify] Failed to update users roleSelected/lastSelectedRole:', e?.message);
+        }
       }
     }
 
