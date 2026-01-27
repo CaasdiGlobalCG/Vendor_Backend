@@ -1,6 +1,12 @@
 import * as DynamoVendor from '../models/DynamoVendor.js';
 import { uploadFileToS3, deleteFileFromS3 } from '../../../utils/s3Utils.js';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  listProductsByVendorId,
+  getProductById as getProductByIdFromTable,
+  putProduct,
+  deleteProductById as deleteProductByIdFromTable,
+} from '../models/DynamoProducts.js';
 
 /**
  * Get all products for a vendor
@@ -18,7 +24,7 @@ export const getProducts = async (req, res) => {
       });
     }
 
-    // Get the vendor from DynamoDB
+    // Resolve vendorId from the authenticated vendor
     const vendor = await DynamoVendor.getVendorByEmail(email);
 
     if (!vendor) {
@@ -28,19 +34,19 @@ export const getProducts = async (req, res) => {
       });
     }
 
-    // Check if the vendor has products
-    if (!vendor.products || !Array.isArray(vendor.products) || vendor.products.length === 0) {
-      return res.status(200).json({
-        success: true,
-        message: 'No products found',
-        data: []
+    const vendorId = vendor.vendorId || vendor.id;
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'VendorId not found for this vendor'
       });
     }
 
-    // Return the products
+    const products = await listProductsByVendorId(vendorId);
+
     res.status(200).json({
       success: true,
-      data: vendor.products
+      data: products
     });
   } catch (error) {
     console.error('Error getting products:', error);
@@ -74,13 +80,20 @@ export const addProduct = async (req, res) => {
       });
     }
 
-    // Get the vendor from DynamoDB
     const vendor = await DynamoVendor.getVendorByEmail(email);
 
     if (!vendor) {
       return res.status(404).json({
         success: false,
         message: 'Vendor not found'
+      });
+    }
+
+    const vendorId = vendor.vendorId || vendor.id;
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'VendorId not found for this vendor'
       });
     }
 
@@ -99,12 +112,8 @@ export const addProduct = async (req, res) => {
             `products/${productId}`
           );
           
-          imageUrls.push({
-            url: s3Url,
-            originalName: file.originalname,
-            contentType: file.mimetype,
-            uploadedAt: new Date().toISOString()
-          });
+          // Products table schema uses string URLs for images
+          imageUrls.push(s3Url);
           
           console.log('Product image uploaded to S3:', s3Url);
         }
@@ -141,20 +150,25 @@ export const addProduct = async (req, res) => {
     }
 
     // Create the new product object
+    const now = Date.now();
     const newProduct = {
-      id: productId,
+      vendorId,
+      productId,
       ...productData,
-      images: imageUrls,
-      productPdf: productPdf,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      // Keep compatibility with the schema you shared
+      productName: productData.productName || productData.name || productData.productInfo?.productName || productData.productTitle || productData.title,
+      productCategory: productData.productCategory || productData.category || productData.productInfo?.productCategory,
+      images: imageUrls.length > 0 ? imageUrls : (Array.isArray(productData.images) ? productData.images : []),
+      documents: Array.isArray(productData.documents) ? productData.documents : [],
+      status: productData.status || 'DRAFT',
+      userId: productData.userId || req.auth?.sub || productData.sub || null,
+      createdAt: productData.createdAt || now,
+      updatedAt: now,
+      // Store PDF as a document entry (optional)
+      ...(productPdf ? { productPdf } : {}),
     };
 
-    // Add the product to the vendor's products array
-    const updatedProducts = vendor.products ? [...vendor.products, newProduct] : [newProduct];
-    
-    // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, { products: updatedProducts });
+    await putProduct(newProduct);
 
     res.status(201).json({
       success: true,
@@ -194,7 +208,6 @@ export const updateProduct = async (req, res) => {
       });
     }
 
-    // Get the vendor from DynamoDB
     const vendor = await DynamoVendor.getVendorByEmail(email);
 
     if (!vendor) {
@@ -204,29 +217,24 @@ export const updateProduct = async (req, res) => {
       });
     }
 
-    // Check if the vendor has products
-    if (!vendor.products || !Array.isArray(vendor.products)) {
-      return res.status(404).json({
+    const vendorId = vendor.vendorId || vendor.id;
+    if (!vendorId) {
+      return res.status(400).json({
         success: false,
-        message: 'No products found for this vendor'
+        message: 'VendorId not found for this vendor'
       });
     }
 
-    // Find the product to update
-    const productIndex = vendor.products.findIndex(p => p.id === productId);
-    
-    if (productIndex === -1) {
+    const existingProduct = await getProductByIdFromTable(vendorId, productId);
+    if (!existingProduct) {
       return res.status(404).json({
         success: false,
         message: 'Product not found'
       });
     }
 
-    // Get the existing product
-    const existingProduct = vendor.products[productIndex];
-
     // Handle product image uploads
-    let imageUrls = existingProduct.images || [];
+    let imageUrls = Array.isArray(existingProduct.images) ? [...existingProduct.images] : [];
     
     // Handle image deletions if specified
     const deleteImages = req.body.deleteImages ? JSON.parse(req.body.deleteImages) : [];
@@ -242,8 +250,8 @@ export const updateProduct = async (req, res) => {
         }
       }
       
-      // Filter out the deleted images from the imageUrls array
-      imageUrls = imageUrls.filter(img => !deleteImages.includes(img.url));
+      // Filter out deleted URLs (schema uses string URLs)
+      imageUrls = imageUrls.filter(url => !deleteImages.includes(url));
     }
     
     // Add new images if provided
@@ -257,12 +265,7 @@ export const updateProduct = async (req, res) => {
             `products/${productId}`
           );
           
-          imageUrls.push({
-            url: s3Url,
-            originalName: file.originalname,
-            contentType: file.mimetype,
-            uploadedAt: new Date().toISOString()
-          });
+          imageUrls.push(s3Url);
           
           console.log('Product image uploaded to S3:', s3Url);
         }
@@ -276,16 +279,15 @@ export const updateProduct = async (req, res) => {
     const updatedProduct = {
       ...existingProduct,
       ...productData,
+      vendorId,
+      productId,
+      productName: productData.productName || productData.name || existingProduct.productName,
+      productCategory: productData.productCategory || productData.category || existingProduct.productCategory,
       images: imageUrls,
-      updatedAt: new Date().toISOString()
+      updatedAt: Date.now(),
     };
 
-    // Update the product in the vendor's products array
-    const updatedProducts = [...vendor.products];
-    updatedProducts[productIndex] = updatedProduct;
-    
-    // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, { products: updatedProducts });
+    await putProduct(updatedProduct);
 
     res.status(200).json({
       success: true,
@@ -319,7 +321,6 @@ export const deleteProduct = async (req, res) => {
       });
     }
 
-    // Get the vendor from DynamoDB
     const vendor = await DynamoVendor.getVendorByEmail(email);
 
     if (!vendor) {
@@ -329,34 +330,30 @@ export const deleteProduct = async (req, res) => {
       });
     }
 
-    // Check if the vendor has products
-    if (!vendor.products || !Array.isArray(vendor.products)) {
-      return res.status(404).json({
+    const vendorId = vendor.vendorId || vendor.id;
+    if (!vendorId) {
+      return res.status(400).json({
         success: false,
-        message: 'No products found for this vendor'
+        message: 'VendorId not found for this vendor'
       });
     }
 
-    // Find the product to delete
-    const productIndex = vendor.products.findIndex(p => p.id === productId);
-    
-    if (productIndex === -1) {
+    const productToDelete = await getProductByIdFromTable(vendorId, productId);
+    if (!productToDelete) {
       return res.status(404).json({
         success: false,
         message: 'Product not found'
       });
     }
 
-    // Get the product to delete
-    const productToDelete = vendor.products[productIndex];
-
     // Delete product images from S3
     if (productToDelete.images && Array.isArray(productToDelete.images)) {
       for (const image of productToDelete.images) {
         try {
-          if (image.url) {
-            await deleteFileFromS3(image.url);
-            console.log('Deleted image from S3:', image.url);
+          const url = typeof image === 'string' ? image : image?.url;
+          if (url) {
+            await deleteFileFromS3(url);
+            console.log('Deleted image from S3:', url);
           }
         } catch (error) {
           console.error('Error deleting image from S3:', error);
@@ -365,11 +362,7 @@ export const deleteProduct = async (req, res) => {
       }
     }
 
-    // Remove the product from the vendor's products array
-    const updatedProducts = vendor.products.filter(p => p.id !== productId);
-    
-    // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, { products: updatedProducts });
+    await deleteProductByIdFromTable(vendorId, productId);
 
     res.status(200).json({
       success: true,
