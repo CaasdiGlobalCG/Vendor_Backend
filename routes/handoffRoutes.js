@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
 import { createSession, getTokenForSession } from '../utils/sessionStore.js';
 import * as DynamoUser from '../models/DynamoUser.js';
+import * as DynamoVendor from '../modules/vendor/models/DynamoVendor.js';
 
 const router = express.Router();
 
@@ -83,7 +84,8 @@ function getCookieValue(req, name) {
 function getAuthTokenFromRequest(req) {
   const authHeader = req.headers?.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authHeader.substring('Bearer '.length);
+    const token = authHeader.substring('Bearer '.length).trim();
+    if (token) return token;
   }
 
   const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
@@ -92,6 +94,17 @@ function getAuthTokenFromRequest(req) {
   const looksLikeJwt = cookieVal.split('.').length === 3;
   if (looksLikeJwt) return cookieVal;
   return getTokenForSession(cookieVal);
+}
+
+function getAuthTokenFromRequestOrBody(req) {
+  const fromReq = getAuthTokenFromRequest(req);
+  if (fromReq) return fromReq;
+
+  const bodyToken = req.body?.token || req.body?.authToken || null;
+  if (!bodyToken) return null;
+  const token = String(bodyToken).trim();
+  if (!token) return null;
+  return token;
 }
 
 // POST /api/auth/session
@@ -189,17 +202,29 @@ router.post('/logout', async (req, res) => {
 router.post('/handoff', async (req, res) => {
   try {
     cleanupExpired();
-    const token = getAuthTokenFromRequest(req);
+    const token = getAuthTokenFromRequestOrBody(req);
     if (!token) return res.status(401).json({ error: 'Missing token' });
 
     const decoded = await verifyCognitoToken(token);
     const email = decoded?.email;
     if (!email) return res.status(400).json({ error: 'Token missing email' });
 
+    const normalizedEmail = String(email).trim().toLowerCase();
+    let vendorId = null;
+    try {
+      const vendorRecord =
+        (await DynamoVendor.getVendorByEmail(normalizedEmail)) ||
+        (normalizedEmail !== email ? await DynamoVendor.getVendorByEmail(email) : null);
+      vendorId = vendorRecord?.vendorId || vendorRecord?.id || null;
+    } catch (e) {
+      console.warn('[handoff] could not resolve vendorId:', e?.message);
+    }
+
     const code = randomCode();
     handoffStore.set(code, {
       token,
-      email,
+      email: normalizedEmail,
+      vendorId,
       expiresAt: Date.now() + HANDOFF_TTL_MS,
     });
 
@@ -207,6 +232,38 @@ router.post('/handoff', async (req, res) => {
   } catch (e) {
     console.error('[handoff] error:', e?.message);
     return res.status(401).json({ error: 'Not authenticated' });
+  }
+});
+
+// GET /api/auth/handoff/sales-exchange?code=...
+// Exchanges the one-time code for vendor-safe bootstrap data for the Sales UI.
+// This avoids putting authToken/vendorId in the URL.
+router.get('/handoff/sales-exchange', async (req, res) => {
+  try {
+    cleanupExpired();
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: 'Missing code' });
+
+    const entry = handoffStore.get(code);
+    if (!entry) return res.status(404).json({ error: 'Invalid or expired code' });
+
+    if (entry.expiresAt <= Date.now()) {
+      handoffStore.delete(code);
+      return res.status(404).json({ error: 'Invalid or expired code' });
+    }
+
+    // One-time use
+    handoffStore.delete(code);
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      authToken: entry.token,
+      vendorId: entry.vendorId || null,
+      email: entry.email || null,
+    });
+  } catch (e) {
+    console.error('[handoff/sales-exchange] error:', e?.message);
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
