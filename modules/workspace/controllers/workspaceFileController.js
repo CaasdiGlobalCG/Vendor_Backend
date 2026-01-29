@@ -11,8 +11,8 @@ export const uploadWorkspaceFile = async (req, res) => {
       return res.status(400).json({ error: 'No file provided' });
     }
 
-    if (!workspaceId) {
-      return res.status(400).json({ error: 'Workspace ID is required' });
+    if (!subtaskId) {
+      return res.status(400).json({ error: 'Subtask ID is required - uploads must be associated with a specific subtask' });
     }
 
     const file = req.file;
@@ -20,20 +20,17 @@ export const uploadWorkspaceFile = async (req, res) => {
     const fileExtension = path.extname(file.originalname);
     const fileName = `${fileId}${fileExtension}`;
     
-    // Create S3 key with workspace organization
-    // Structure: workspaces/{workspaceId}/vendors/{vendorId}/tasks/{taskId}/subtasks/{subtaskId}/files/{fileName}
-    let s3Key = `workspaces/${workspaceId}`;
-    
-    if (vendorId) {
-      s3Key += `/vendors/${vendorId}`;
-    }
+    // Create S3 key with subtask as the primary scope
+    // Structure: subtasks/{subtaskId}/workspaces/{workspaceId}/files/{fileName}
+    // This ensures files are scoped to subtasks and not visible across other subtasks
+    let s3Key = `subtasks/${subtaskId}/workspaces/${workspaceId}`;
     
     if (taskId) {
       s3Key += `/tasks/${taskId}`;
-      
-      if (subtaskId) {
-        s3Key += `/subtasks/${subtaskId}`;
-      }
+    }
+    
+    if (vendorId) {
+      s3Key += `/vendors/${vendorId}`;
     }
     
     s3Key += `/files/${fileName}`;
@@ -106,14 +103,14 @@ export const uploadWorkspaceFile = async (req, res) => {
 export const getWorkspaceFileDownloadUrl = async (req, res) => {
   try {
     const { fileId } = req.params;
-    const { workspaceId } = req.query;
+    const { workspaceId, subtaskId } = req.query;
 
-    if (!workspaceId) {
-      return res.status(400).json({ error: 'Workspace ID is required' });
+    if (!subtaskId) {
+      return res.status(400).json({ error: 'Subtask ID is required to download files' });
     }
 
-    // Find the file in S3 by searching workspace prefix
-    const prefix = `workspaces/${workspaceId}/`;
+    // Find the file in S3 by searching subtask prefix
+    const prefix = `subtasks/${subtaskId}/workspaces/${workspaceId}/`;
     
     const listParams = {
       Bucket: WORKSPACE_UPLOADS_BUCKET,
@@ -124,7 +121,7 @@ export const getWorkspaceFileDownloadUrl = async (req, res) => {
     const fileObject = objects.Contents?.find(obj => obj.Key.includes(fileId));
 
     if (!fileObject) {
-      return res.status(404).json({ error: 'File not found' });
+      return res.status(404).json({ error: 'File not found in this subtask' });
     }
 
     // Generate signed URL for download
@@ -201,14 +198,14 @@ export const getWorkspaceFileViewUrl = async (req, res) => {
 export const deleteWorkspaceFile = async (req, res) => {
   try {
     const { fileId } = req.params;
-    const { workspaceId } = req.query;
+    const { workspaceId, subtaskId } = req.query;
 
-    if (!workspaceId) {
-      return res.status(400).json({ error: 'Workspace ID is required' });
+    if (!subtaskId) {
+      return res.status(400).json({ error: 'Subtask ID is required to delete files' });
     }
 
     // Find and delete the file
-    const prefix = `workspaces/${workspaceId}/`;
+    const prefix = `subtasks/${subtaskId}/workspaces/${workspaceId}/`;
     
     const listParams = {
       Bucket: WORKSPACE_UPLOADS_BUCKET,
@@ -219,7 +216,7 @@ export const deleteWorkspaceFile = async (req, res) => {
     const fileObject = objects.Contents?.find(obj => obj.Key.includes(fileId));
 
     if (!fileObject) {
-      return res.status(404).json({ error: 'File not found' });
+      return res.status(404).json({ error: 'File not found in this subtask' });
     }
 
     const deleteParams = {
@@ -251,27 +248,38 @@ export const listWorkspaceFiles = async (req, res) => {
     const { workspaceId } = req.params;
     const { vendorId, taskId, subtaskId } = req.query;
 
-    // Build prefix based on provided parameters
-    let prefix = `workspaces/${workspaceId}/`;
-    
-    if (vendorId) {
-      prefix += `vendors/${vendorId}/`;
+    // If subtaskId is provided, filter files to only that subtask
+    // Otherwise, return no files (require explicit subtask filter)
+    if (!subtaskId) {
+      console.log('📋 WorkspaceFileController: No subtaskId provided, returning empty file list');
+      return res.status(200).json({
+        success: true,
+        files: [],
+        count: 0,
+        message: 'Subtask ID required to list files - files are scoped to subtasks'
+      });
     }
+
+    // Build prefix with subtask as primary scope
+    // Structure: subtasks/{subtaskId}/workspaces/{workspaceId}/...
+    let prefix = `subtasks/${subtaskId}/workspaces/${workspaceId}`;
     
     if (taskId) {
-      prefix += `tasks/${taskId}/`;
-      
-      if (subtaskId) {
-        prefix += `subtasks/${subtaskId}/`;
-      }
+      prefix += `/tasks/${taskId}`;
     }
+    
+    if (vendorId) {
+      prefix += `/vendors/${vendorId}`;
+    }
+    
+    prefix += `/`;
     
     const listParams = {
       Bucket: WORKSPACE_UPLOADS_BUCKET,
       Prefix: prefix
     };
 
-    console.log('📋 WorkspaceFileController: Listing files with prefix:', prefix);
+    console.log('📋 WorkspaceFileController: Listing files for subtask with prefix:', prefix);
 
     const objects = await s3.listObjectsV2(listParams).promise();
 
@@ -341,14 +349,14 @@ export const listWorkspaceFiles = async (req, res) => {
 export const getWorkspaceFileMetadata = async (req, res) => {
   try {
     const { fileId } = req.params;
-    const { workspaceId } = req.query;
+    const { workspaceId, subtaskId } = req.query;
 
-    if (!workspaceId) {
-      return res.status(400).json({ error: 'Workspace ID is required' });
+    if (!subtaskId) {
+      return res.status(400).json({ error: 'Subtask ID is required to access file metadata' });
     }
 
     // Find the file in S3
-    const prefix = `workspaces/${workspaceId}/`;
+    const prefix = `subtasks/${subtaskId}/workspaces/${workspaceId}/`;
     
     const listParams = {
       Bucket: WORKSPACE_UPLOADS_BUCKET,
@@ -359,7 +367,7 @@ export const getWorkspaceFileMetadata = async (req, res) => {
     const fileObject = objects.Contents?.find(obj => obj.Key.includes(fileId));
 
     if (!fileObject) {
-      return res.status(404).json({ error: 'File not found' });
+      return res.status(404).json({ error: 'File not found in this subtask' });
     }
 
     // Get detailed metadata
