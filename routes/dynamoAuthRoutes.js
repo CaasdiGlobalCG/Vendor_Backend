@@ -24,23 +24,52 @@ const router = express.Router();
 const cognitoClient = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 
 // Fetch and cache Cognito JWKS
-let jwks = {};
-const fetchJwks = async () => {
+let jwks = { keys: [] };
+let lastFetchedAt = 0;
+const JWKS_REFRESH_MS = 60 * 60 * 1000; // 1 hour
+
+const fetchJwks = async (force = false) => {
+  const now = Date.now();
+  if (!force && jwks?.keys?.length && now - lastFetchedAt < JWKS_REFRESH_MS) return;
+
+  const region = process.env.AWS_REGION;
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  if (!region || !userPoolId) {
+    console.warn('[jwks] Missing AWS_REGION or COGNITO_USER_POOL_ID');
+    return;
+  }
+
   try {
     const response = await axios.get(
-      `https://cognito-idp.${process.env.AWS_REGION}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}/.well-known/jwks.json`
+      `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`,
+      { timeout: 10000 } // 10 second timeout
     );
     jwks = response.data;
+    lastFetchedAt = now;
+    console.log('[jwks] Successfully fetched JWKS');
   } catch (error) {
-    console.error("Error fetching JWKS:", error);
+    console.error('[jwks] Error fetching JWKS:', error?.message || error);
+    // Don't overwrite existing keys on error
   }
 };
-fetchJwks(); // Initial fetch
+
+// Initial fetch (best-effort)
+fetchJwks().catch(() => undefined);
 
 // Function to get PEM from JWKS based on kid
-const getPem = (kid) => {
-  const key = jwks.keys.find((k) => k.kid === kid);
-  return key ? jwkToPem(key) : null;
+const getPem = async (kid) => {
+  try {
+    let key = jwks?.keys?.find((k) => k.kid === kid);
+    if (!key) {
+      // Try to refresh JWKS in background
+      await fetchJwks(true);
+      key = jwks?.keys?.find((k) => k.kid === kid);
+    }
+    return key ? jwkToPem(key) : null;
+  } catch (e) {
+    console.error('[jwks] getPem error:', e?.message || e);
+    return null;
+  }
 };
 
 // Google login route
@@ -204,7 +233,7 @@ router.post("/set-role", async (req, res) => {
         return res.status(401).json({ error: "Invalid token" });
       }
       const kid = decodedToken.header.kid;
-      const pem = getPem(kid);
+      const pem = await getPem(kid);
       if (!pem) {
         return res.status(401).json({ error: "Invalid key ID" });
       }
@@ -416,7 +445,7 @@ router.get("/verify", async (req, res) => {
         return res.status(401).json({ error: "Invalid token" });
       }
       const kid = decodedToken.header.kid;
-      const pem = getPem(kid);
+      const pem = await getPem(kid);
       if (!pem) {
         return res.status(401).json({ error: "Invalid key ID" });
       }
