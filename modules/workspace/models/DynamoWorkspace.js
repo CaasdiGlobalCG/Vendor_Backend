@@ -165,6 +165,9 @@ const removeUndefined = (obj) => {
 
 // Update a workspace
 export const updateWorkspace = async (id, workspaceData) => {
+  // Track errors for fallback handling
+  let lastError = null;
+  
   // Clean workspaceData of undefined values
   const cleanWorkspaceData = removeUndefined(workspaceData);
 
