@@ -529,22 +529,46 @@ export const updateSubtaskCanvas = async (req, res) => {
       };
       const verifyResult = await dynamoDB.get(verifyParams).promise();
       if (verifyResult.Item) {
-        console.log('🔍 Backend: Verification - nodes count in DynamoDB:', verifyResult.Item.nodes?.length || 0);
-        console.log('🔍 Backend: Verification - edges count in DynamoDB:', verifyResult.Item.edges?.length || 0);
-        const importantNodes = verifyResult.Item.nodes?.filter(n => n.data?.isImportant) || [];
-        console.log('🔍 Backend: Important nodes count:', importantNodes.length);
-        if (importantNodes.length > 0) {
-          console.log('🔍 Backend: Important node details:', importantNodes.map(n => ({ id: n.id, name: n.data?.name })));
+        const itemTasks = Array.isArray(verifyResult.Item.tasks) ? verifyResult.Item.tasks : [];
+        const savedTask = itemTasks.find(t => t?.id === taskId);
+        const savedSubtask = (savedTask?.subtasks || []).find(st => st?.id === subtaskId);
+
+        if (!savedTask) {
+          console.warn('⚠️ Backend: Verification could not find taskId in saved item:', {
+            taskId,
+            availableTaskIds: itemTasks.map(t => t?.id).filter(Boolean)
+          });
         }
-        if (verifyResult.Item.nodes?.length !== nodes?.length) {
-          console.error('❌ Backend: MISMATCH! Nodes not saved correctly to DynamoDB!');
+        if (savedTask && !savedSubtask) {
+          console.warn('⚠️ Backend: Verification could not find subtaskId in saved task:', {
+            taskId,
+            subtaskId,
+            availableSubtaskIds: (savedTask?.subtasks || []).map(st => st?.id).filter(Boolean)
+          });
+        }
+        const savedCanvasNodes = savedSubtask?.canvasData?.nodes || [];
+        const savedCanvasEdges = savedSubtask?.canvasData?.edges || [];
+
+        console.log('🔍 Backend: Verification (subtask canvas) - nodes count in DynamoDB:', savedCanvasNodes.length);
+        console.log('🔍 Backend: Verification (subtask canvas) - edges count in DynamoDB:', savedCanvasEdges.length);
+
+        const nodesWithApproval = savedCanvasNodes.filter(n => n?.data?.approvalStatus);
+        console.log('🔍 Backend: Verification (subtask canvas) - nodes with approval status:', nodesWithApproval.length);
+        nodesWithApproval.forEach((node, idx) => {
+          console.log(`  Verified Node ${idx}:`, {
+            id: node.id,
+            approvalStatus: node.data?.approvalStatus,
+            hasPmApproval: !!node.data?.pmApproval,
+            hasClientApproval: !!node.data?.clientApproval
+          });
+        });
+
+        if (savedCanvasNodes.length !== (nodes?.length || 0)) {
+          console.error('❌ Backend: VERIFICATION MISMATCH (subtask canvas)!');
           console.error('❌ Backend: Expected nodes count:', nodes?.length || 0);
-          console.error('❌ Backend: Actual nodes count in DB:', verifyResult.Item.nodes?.length || 0);
-          if (verifyResult.Item.nodes?.length > 0) {
-            console.log('🔍 Backend: First node in DB:', JSON.stringify(verifyResult.Item.nodes[0], null, 2));
-          }
+          console.error('❌ Backend: Actual nodes count in DB (subtask canvas):', savedCanvasNodes.length);
         } else {
-          console.log('✅ Backend: Verification passed - nodes match!');
+          console.log('✅ Backend: Verification passed (subtask canvas) - nodes match!');
         }
       } else {
         console.error('❌ Backend: Verification failed - workspace not found in DynamoDB!');
