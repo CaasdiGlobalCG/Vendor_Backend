@@ -432,13 +432,72 @@ export const updateSubtaskCanvas = async (req, res) => {
     if (subtaskIndex === -1) {
       return res.status(404).json({ message: 'Subtask not found' });
     }
+
+    const approvalRank = (status) => {
+      const normalized = (typeof status === 'string' ? status : '').toLowerCase();
+      const order = {
+        '': 0,
+        'draft': 1,
+        'pending': 2,
+        'sent_to_pm': 3,
+        'pm_approved': 4,
+        'client_approved': 5,
+        'locked': 6,
+        'approved': 6,
+        'rejected': 6
+      };
+      return order[normalized] ?? 0;
+    };
+
+    const mergeNodeData = (existingNode, incomingNode) => {
+      if (!existingNode) return incomingNode;
+
+      const existingData = existingNode.data || {};
+      const incomingData = incomingNode.data || {};
+
+      const existingStatus = existingData.approvalStatus;
+      const incomingStatus = incomingData.approvalStatus;
+
+      // Basic merge: keep incoming changes, but preserve any existing fields not provided
+      const merged = {
+        ...existingNode,
+        ...incomingNode,
+        data: {
+          ...existingData,
+          ...incomingData
+        }
+      };
+
+      // Never allow approval status to move backwards due to stale autosaves
+      if (approvalRank(existingStatus) > approvalRank(incomingStatus)) {
+        merged.data.approvalStatus = existingStatus;
+      }
+
+      // Preserve nested approval objects if incoming payload omitted them
+      if (existingData.pmApproval && !incomingData.pmApproval) {
+        merged.data.pmApproval = existingData.pmApproval;
+      }
+      if (existingData.clientApproval && !incomingData.clientApproval) {
+        merged.data.clientApproval = existingData.clientApproval;
+      }
+
+      return merged;
+    };
     
     // Update subtask canvas data
     const updatedTasks = [...tasks];
+
+    const existingCanvasData = updatedTasks[taskIndex].subtasks[subtaskIndex].canvasData || { nodes: [], edges: [], zoomLevel: 100 };
+    const existingNodes = existingCanvasData.nodes || [];
+    const existingNodesById = new Map(existingNodes.filter(n => n && n.id).map(n => [n.id, n]));
+
+    const incomingNodes = Array.isArray(nodes) ? nodes : [];
+    const mergedNodes = incomingNodes.map((n) => mergeNodeData(existingNodesById.get(n?.id), n));
+
     updatedTasks[taskIndex].subtasks[subtaskIndex].canvasData = {
-      nodes: nodes || [],
-      edges: edges || [],
-      zoomLevel: zoomLevel || 100
+      nodes: mergedNodes,
+      edges: Array.isArray(edges) ? edges : (existingCanvasData.edges || []),
+      zoomLevel: zoomLevel || existingCanvasData.zoomLevel || 100
     };
     updatedTasks[taskIndex].subtasks[subtaskIndex].updatedAt = new Date().toISOString();
     updatedTasks[taskIndex].updatedAt = new Date().toISOString();
