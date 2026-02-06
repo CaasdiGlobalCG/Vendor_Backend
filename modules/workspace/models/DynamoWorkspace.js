@@ -50,9 +50,30 @@ export const createWorkspace = async (workspaceData) => {
 
 // Internal: find a workspace by any of workspaceId | projectId | id
 async function findWorkspaceByAnyId(anyId) {
-  // Search in workspaces_table only
+  // 1) Fast path: try primary-key lookup first (strongly consistent)
+  if (anyId) {
+    try {
+      const getResult = await dynamoDB
+        .get({
+          TableName: WORKSPACES_TABLE,
+          Key: { workspaceId: anyId },
+          ConsistentRead: true
+        })
+        .promise();
+
+      if (getResult?.Item) {
+        return getResult.Item;
+      }
+    } catch (err) {
+      // Ignore and fall back to scan (id could be projectId / legacy id)
+      console.warn('⚠️ DynamoDB: Primary-key get failed, falling back to scan:', err?.message);
+    }
+  }
+
+  // 2) Fallback: scan by workspaceId | projectId | id (use consistent reads)
   const params = {
     TableName: WORKSPACES_TABLE,
+    ConsistentRead: true,
     FilterExpression: '#wid = :id OR #pid = :id OR #id = :id',
     ExpressionAttributeNames: { '#wid': 'workspaceId', '#pid': 'projectId', '#id': 'id' },
     ExpressionAttributeValues: { ':id': anyId }
