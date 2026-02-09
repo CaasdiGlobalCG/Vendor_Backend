@@ -177,6 +177,7 @@ async function loadModules() {
     const vendorModule = await import('./modules/vendor/index.js');
     app.use('/api/vendor', vendorModule.dynamoVendorRoutes);
     app.use('/api/vendor-leads', vendorModule.vendorLeadRoutes);
+    app.use('/api/referral-leads', vendorModule.referralLeadRoutes);
     app.use('/api/vendor', vendorModule.productRoutes); // Product routes
     app.use('/api/vendor', vendorModule.serviceRoutes); // Service routes
     console.log('✅ Vendor Module loaded');

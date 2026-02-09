@@ -1,6 +1,7 @@
 // Vendor Module - Vendor management functionality
 export { default as vendorRoutes } from './routes/vendorRoutes.js';
 export { default as vendorLeadRoutes } from './routes/vendorLeadRoutes.js';
+export { default as referralLeadRoutes } from './routes/referralLeadRoutes.js';
 export { default as dynamoVendorRoutes } from './routes/dynamoVendorRoutes.js';
 export { default as productRoutes } from './routes/productRoutes.js';
 export { default as serviceRoutes } from './routes/serviceRoutes.js';
