@@ -28,6 +28,7 @@ import trunkyRoutes from './routes/trunkyRoutes.js';
 import customersRoutes from './routes/customersRoutes.js';
 import itemsRoutes from './routes/itemsRoutes.js';
 import turnkeyWorkflowRoutes from './routes/turnkeyWorkflowRoutes.js';
+import elementDeletionHistoryRoutes from './modules/workspace/routes/elementDeletionHistoryRoutes.js'; // Element deletion history routes
 import postServiceRoutes from './modules/post-services/routes/postServiceRoutes.js'; // New import for Post Services routes
 import postServiceNotificationRoutes from './modules/post-services/routes/notificationRoutes.js'; // New import for Post Services Notifications routes
 import dashboardRoutes from './routes/dashboard.routes.js';
@@ -225,6 +226,7 @@ app.use('/api/trunky', trunkyRoutes); // Trunky Task Management routes
 app.use('/api/customers', customersRoutes); // Customers routes
 app.use('/api/items', itemsRoutes); // Items routes
 app.use('/api/turnkey-workflows', turnkeyWorkflowRoutes); // Turnkey Workflow Management routes
+app.use('/api/element-deletion-history', elementDeletionHistoryRoutes); // Element deletion history routes
 app.use('/api', sendProgressEmailRoutes); // Register sendProgressEmail route
 
 // Error handler
