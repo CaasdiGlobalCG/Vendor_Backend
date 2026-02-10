@@ -27,6 +27,9 @@ router.get('/workspaces/:workspaceId/collaborators', dynamoWorkspaceController.g
 // Update workspace permissions
 router.put('/workspaces/:workspaceId/permissions', dynamoWorkspaceController.updateWorkspacePermissions);
 
+// Request project completion (vendor submits, PM and Client approvals trigger status change)
+router.post('/workspaces/:workspaceId/request-completion', dynamoWorkspaceController.requestProjectCompletion);
+
 // Access status and verification
 router.get('/workspace-access/status/:workspaceId', getWorkspaceAccessStatus);
 router.get('/workspace-access/verify/:workspaceId', verifyWorkspaceAccess);

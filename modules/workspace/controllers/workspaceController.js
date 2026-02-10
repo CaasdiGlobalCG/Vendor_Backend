@@ -4067,9 +4067,10 @@ const clientApproveProjectComplete = async (req, res) => {
       clientApprovedAt: new Date().toISOString()
     };
 
-    // Update workspace
+    // Update workspace - set both project_status AND root-level status to completed
     await updateWorkspace(workspaceId, {
-      project_status: updatedProjectStatus
+      project_status: updatedProjectStatus,
+      status: 'completed'
     });
 
     res.status(200).json({

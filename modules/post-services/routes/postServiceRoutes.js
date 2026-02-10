@@ -18,6 +18,12 @@ router.get('/post-services/:workspaceId', postServiceController.getPostServices)
 // GET /api/post-services/:workspaceId/subtask/:subtaskId - Get post services for a specific subtask
 router.get('/post-services/:workspaceId/subtask/:subtaskId', postServiceController.getPostServicesBySubtask);
 
+// POST /api/post-services/:postId/unlock-request - Request to unlock a task/subtask
+router.post('/post-services/:postId/unlock-request', postServiceController.requestUnlock);
+
+// POST /api/post-services/:postId/unlock-approve - Approve or reject unlock request
+router.post('/post-services/:postId/unlock-approve', postServiceController.approveUnlock);
+
 // GET /api/post-services/test/s3 - Test S3 connection
 router.get('/post-services/test/s3', async (req, res) => {
   try {

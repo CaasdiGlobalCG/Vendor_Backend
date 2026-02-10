@@ -243,20 +243,75 @@ export const deletePostService = async (postId, workspaceId) => {
 
 // Get a single post service entry by ID
 export const getPostServiceById = async (postId, workspaceId) => {
-  const params = {
-    TableName: POST_SERVICES_TABLE,
-    Key: {
-      workspaceId: workspaceId,
-      postId: postId,
-    },
-  };
-
   try {
-    const result = await dynamoDB.get(params).promise();
-    return result.Item || null;
+    // Scan to find the post by postId
+    const scanParams = {
+      TableName: POST_SERVICES_TABLE,
+      FilterExpression: 'workspaceId = :workspaceId AND postId = :postId',
+      ExpressionAttributeValues: {
+        ':workspaceId': workspaceId,
+        ':postId': postId
+      }
+    };
+
+    const scanResult = await dynamoDB.scan(scanParams).promise();
+    
+    if (!scanResult.Items || scanResult.Items.length === 0) {
+      return null;
+    }
+
+    return scanResult.Items[0];
   } catch (error) {
     console.error('Error getting post service by ID from DynamoDB:', error);
     throw error;
   }
 };
 
+// Alias for getPostServiceById
+export const getPostById = getPostServiceById;
+
+// Update post with unlock request information
+export const updatePostUnlockRequest = async (postId, workspaceId, unlockRequest) => {
+  const now = new Date().toISOString();
+  
+  try {
+    // First, scan to find the post by postId to get its createdAt timestamp
+    const scanParams = {
+      TableName: POST_SERVICES_TABLE,
+      FilterExpression: 'workspaceId = :workspaceId AND postId = :postId',
+      ExpressionAttributeValues: {
+        ':workspaceId': workspaceId,
+        ':postId': postId
+      }
+    };
+
+    const scanResult = await dynamoDB.scan(scanParams).promise();
+    
+    if (!scanResult.Items || scanResult.Items.length === 0) {
+      throw new Error(`Post with ID ${postId} not found in workspace ${workspaceId}`);
+    }
+
+    const targetPost = scanResult.Items[0];
+
+    // Now update the post using the correct key structure (workspaceId + createdAt)
+    const params = {
+      TableName: POST_SERVICES_TABLE,
+      Key: {
+        workspaceId: workspaceId,
+        createdAt: targetPost.createdAt
+      },
+      UpdateExpression: 'SET unlockRequest = :unlockRequest, updatedAt = :updatedAt',
+      ExpressionAttributeValues: {
+        ':unlockRequest': unlockRequest,
+        ':updatedAt': now,
+      },
+      ReturnValues: 'ALL_NEW',
+    };
+
+    const result = await dynamoDB.update(params).promise();
+    return result.Attributes;
+  } catch (error) {
+    console.error('Error updating post unlock request in DynamoDB:', error);
+    throw error;
+  }
+};

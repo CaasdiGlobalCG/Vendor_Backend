@@ -122,8 +122,32 @@ export const updateWorkspace = async (req, res) => {
     // If workspace is completed, prevent vendors from making changes
     const requesterRole = req.user?.role || '';
     const isVendorRequester = requesterRole && requesterRole.toLowerCase() !== 'pm' && requesterRole.toLowerCase() !== 'admin';
-    if (existingWorkspace.status === 'project completed' && isVendorRequester) {
+    const isCompleted = existingWorkspace.status === 'completed' || existingWorkspace.status === 'project completed' || existingWorkspace.project_status === 'completed';
+    if (isCompleted && isVendorRequester) {
       return res.status(403).json({ message: 'Workspace is locked as project completed; edits are not allowed' });
+    }
+
+    // Check if this is a project completion request with both PM and Client approvals
+    if (workspaceData.markCompleted === true || workspaceData.reviewStatus === 'complete') {
+      const hasPmApproval = workspaceData.pmApprovedAt && workspaceData.pmApprovalStatus === 'approved';
+      const hasClientApproval = workspaceData.clientApprovedAt && workspaceData.clientApprovalStatus === 'approved';
+      
+      console.log('🔍 Project Completion Check:', {
+        markCompleted: workspaceData.markCompleted,
+        reviewStatus: workspaceData.reviewStatus,
+        hasPmApproval,
+        hasClientApproval,
+        pmApprovedAt: workspaceData.pmApprovedAt,
+        clientApprovedAt: workspaceData.clientApprovedAt
+      });
+
+      // If both PM and Client have approved, mark as completed at root level
+      if (hasPmApproval && hasClientApproval) {
+        console.log('✅ Both PM and Client approvals detected - marking workspace as completed');
+        workspaceData.status = 'completed';
+        workspaceData.project_status = 'completed';
+        workspaceData.completedAt = new Date().toISOString();
+      }
     }
 
     const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, workspaceData);
@@ -165,7 +189,8 @@ export const saveWorkspaceCanvas = async (req, res) => {
     // Prevent vendors from modifying canvas on completed projects
     const requesterRole = req.user?.role || '';
     const isVendorRequester = requesterRole && requesterRole.toLowerCase() !== 'pm' && requesterRole.toLowerCase() !== 'admin';
-    if (existingWorkspace.status === 'project completed' && isVendorRequester) {
+    const isCompleted = existingWorkspace.status === 'project completed' || existingWorkspace.status === 'completed' || existingWorkspace.project_status === 'completed';
+    if (isCompleted && isVendorRequester) {
       return res.status(403).json({ message: 'Workspace is locked as project completed; canvas updates are not allowed' });
     }
 
@@ -262,7 +287,8 @@ export const addTaskToWorkspace = async (req, res) => {
       // Prevent adding tasks if workspace is completed and requester is vendor
       const requesterRole = req.user?.role || '';
       const isVendorRequester = requesterRole && requesterRole.toLowerCase() !== 'pm' && requesterRole.toLowerCase() !== 'admin';
-      if (workspace.status === 'project completed' && isVendorRequester) {
+      const isCompleted = workspace.status === 'project completed' || workspace.status === 'completed' || workspace.project_status === 'completed';
+      if (isCompleted && isVendorRequester) {
         return res.status(403).json({ message: 'Workspace is locked as project completed; cannot add tasks' });
       }
     
@@ -333,7 +359,8 @@ export const addSubtaskToTask = async (req, res) => {
     // Prevent adding subtasks if workspace is completed and requester is vendor
     const requesterRole2 = req.user?.role || '';
     const isVendorRequester2 = requesterRole2 && requesterRole2.toLowerCase() !== 'pm' && requesterRole2.toLowerCase() !== 'admin';
-    if (workspace.status === 'project completed' && isVendorRequester2) {
+    const isCompletedSubtask = workspace.status === 'project completed' || workspace.status === 'completed' || workspace.project_status === 'completed';
+    if (isCompletedSubtask && isVendorRequester2) {
       return res.status(403).json({ message: 'Workspace is locked as project completed; cannot add subtasks' });
     }
     
@@ -813,6 +840,165 @@ export const updateWorkspacePermissions = async (req, res) => {
     });
   }
 };
+
+/**
+ * Request project completion: verify all tasks/subtasks are approved by PM and Client
+ * If all approvals are present, mark the workspace status as "completed"
+ */
+export const requestProjectCompletion = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const requesterRole = req.user?.role || '';
+    
+    console.log('📋 Project Completion Request:', {
+      workspaceId,
+      requesterRole,
+      requesterUserId: req.user?.userId || req.user?.id
+    });
+
+    // Get the current workspace
+    const workspace = await DynamoWorkspace.getWorkspaceById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Workspace not found' 
+      });
+    }
+
+    // Check if workspace is already completed
+    if (workspace.status === 'completed') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Project is already completed' 
+      });
+    }
+
+    // Validate all tasks and subtasks have both PM and Client approvals
+    const validationResult = validateAllApprovalsComplete(workspace);
+    
+    if (!validationResult.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: validationResult.message,
+        missingApprovals: validationResult.missingApprovals,
+        approvalSummary: validationResult.approvalSummary
+      });
+    }
+
+    // All approvals are present - update workspace status to "completed"
+    const completionTimestamp = new Date().toISOString();
+    const updatedWorkspace = await DynamoWorkspace.updateWorkspace(workspaceId, {
+      status: 'completed',
+      project_status: 'completed',
+      completedAt: completionTimestamp,
+      completedBy: req.user?.userId || req.user?.id || 'system',
+      completedByRole: requesterRole
+    });
+
+    console.log('✅ Project completion request successful:', {
+      workspaceId,
+      newStatus: updatedWorkspace.status,
+      completedAt: completionTimestamp
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Project completion request approved. Workspace status changed to completed.',
+      workspace: updatedWorkspace,
+      completionDetails: {
+        completedAt: completionTimestamp,
+        completedBy: req.user?.userId || req.user?.id,
+        allTasksApproved: validationResult.approvalSummary
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error processing project completion request:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process project completion request',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Helper function to validate that all task elements have received both PM and Client approvals
+ */
+function validateAllApprovalsComplete(workspace) {
+  const missingApprovals = [];
+  let totalElements = 0;
+  let approvedElements = 0;
+
+  // Iterate through all tasks
+  if (!workspace.tasks || workspace.tasks.length === 0) {
+    return {
+      isValid: false,
+      message: 'No tasks found in workspace. Please add tasks before requesting completion.',
+      missingApprovals: [],
+      approvalSummary: { totalElements: 0, approvedElements: 0 }
+    };
+  }
+
+  workspace.tasks.forEach((task, taskIndex) => {
+    // Check subtasks within each task
+    if (!task.subtasks || task.subtasks.length === 0) {
+      missingApprovals.push({
+        taskName: task.name || `Task ${taskIndex + 1}`,
+        taskId: task.id,
+        issue: 'No subtasks found'
+      });
+      return; // Skip this task
+    }
+
+    task.subtasks.forEach((subtask, subtaskIndex) => {
+      // Check elements in subtask canvas data
+      if (subtask.canvasData?.nodes && subtask.canvasData.nodes.length > 0) {
+        subtask.canvasData.nodes.forEach((node) => {
+          const elementData = node.data || {};
+          totalElements++;
+
+          const hasPmApproval = elementData.pmApproval?.status === 'approved';
+          const hasClientApproval = elementData.clientApproval?.status === 'approved';
+
+          if (hasPmApproval && hasClientApproval) {
+            approvedElements++;
+          } else {
+            missingApprovals.push({
+              taskName: task.name || `Task ${taskIndex + 1}`,
+              taskId: task.id,
+              subtaskName: subtask.name || `Subtask ${subtaskIndex + 1}`,
+              subtaskId: subtask.id,
+              elementName: elementData.name || node.id,
+              elementId: node.id,
+              hasPmApproval,
+              hasClientApproval,
+              pmApprovalStatus: elementData.pmApproval?.status || 'pending',
+              clientApprovalStatus: elementData.clientApproval?.status || 'pending'
+            });
+          }
+        });
+      }
+    });
+  });
+
+  const isValid = totalElements > 0 && totalElements === approvedElements;
+  
+  const message = isValid 
+    ? 'All elements have been approved by PM and Client.'
+    : `Approval validation failed. ${approvedElements}/${totalElements} elements are fully approved.`;
+
+  return {
+    isValid,
+    message,
+    missingApprovals,
+    approvalSummary: {
+      totalElements,
+      approvedElements,
+      pendingElements: totalElements - approvedElements
+    }
+  };
+}
 
 // Helper function to get vendor's last activity
 async function getVendorLastActivity(vendorId, workspaceId) {

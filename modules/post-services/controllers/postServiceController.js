@@ -386,3 +386,206 @@ export const getPostServicesBySubtask = async (req, res) => {
     res.status(500).send({ message: 'Failed to get post services by subtask.', error: error.message });
   }
 };
+
+// Request to unlock a task/subtask for a completed project
+export const requestUnlock = async (req, res) => {
+  const { postId } = req.params;
+  const { workspaceId, taskId, subtaskId, requestedBy, requestedByName, requestedByRole } = req.body;
+
+  if (!postId || !workspaceId || !taskId || !subtaskId) {
+    return res.status(400).send({ message: 'Post ID, Workspace ID, Task ID, and Subtask ID are required.' });
+  }
+
+  try {
+    console.log(`🔓 Creating unlock request for task ${taskId}/subtask ${subtaskId} on post ${postId}`);
+    
+    // Create unlock request object
+    const unlockRequest = {
+      status: 'pending',
+      requestedBy,
+      requestedByName,
+      requestedByRole,
+      requestedAt: new Date().toISOString(),
+      taskId,
+      subtaskId
+    };
+
+    // Update the post with unlock request
+    const updatedPost = await DynamoPostService.updatePostUnlockRequest(postId, workspaceId, unlockRequest);
+    
+    // Get workspace to notify client
+    const workspace = await getWorkspaceById(workspaceId);
+    if (workspace && workspace.sharedWith) {
+      // Notify all collaborators about unlock request
+      for (const collabId of workspace.sharedWith) {
+        try {
+          const notification = {
+            recipientId: collabId,
+            senderId: requestedBy,
+            senderName: requestedByName,
+            type: 'unlock_request',
+            message: `${requestedByName} (${requestedByRole}) requested to unlock a task/subtask`,
+            workspaceId,
+            taskId,
+            subtaskId,
+            postId,
+            read: false
+          };
+          
+          await DynamoNotification.createNotification(notification);
+          WebSocket.emitNotification(collabId, notification);
+        } catch (notifError) {
+          console.error(`Error sending notification to ${collabId}:`, notifError);
+        }
+      }
+    }
+
+    console.log(`✅ Unlock request created successfully`);
+    res.status(200).send({ 
+      message: 'Unlock request created successfully',
+      unlockRequest
+    });
+  } catch (error) {
+    console.error('Failed to create unlock request:', error);
+    res.status(500).send({ message: 'Failed to create unlock request.', error: error.message });
+  }
+};
+
+// Approve or reject unlock request
+export const approveUnlock = async (req, res) => {
+  const { postId } = req.params;
+  const { workspaceId, taskId, subtaskId, approved, approvedBy, approvedByName } = req.body;
+
+  if (!postId || !workspaceId || !taskId || !subtaskId || approved === undefined) {
+    return res.status(400).send({ message: 'Post ID, Workspace ID, Task ID, Subtask ID, and approval status are required.' });
+  }
+
+  try {
+    console.log(`🔓 ${approved ? 'Approving' : 'Rejecting'} unlock request for task ${taskId}/subtask ${subtaskId}`);
+    
+    // Get the existing post to retrieve unlock request
+    const post = await DynamoPostService.getPostById(postId, workspaceId);
+    if (!post || !post.unlockRequest) {
+      return res.status(404).send({ message: 'Post or unlock request not found.' });
+    }
+
+    // Update unlock request status
+    const unlockRequest = {
+      ...post.unlockRequest,
+      status: approved ? 'approved' : 'rejected',
+      approvedBy,
+      approvedByName,
+      approvedAt: new Date().toISOString()
+    };
+
+    // Update the post with approval status
+    await DynamoPostService.updatePostUnlockRequest(postId, workspaceId, unlockRequest);
+    
+    // If approved, update workspace to add unlocked task/subtask
+    if (approved) {
+      console.log(`🔓 Fetching workspace ${workspaceId} to add unlock entry`);
+      const workspace = await getWorkspaceById(workspaceId);
+      console.log(`📋 Workspace data:`, workspace ? 'Found' : 'Not found');
+      
+      if (workspace) {
+        // Add to unlockedTasks array in workspace
+        const unlockedTasks = workspace.unlockedTasks || [];
+        console.log(`📋 Existing unlocked tasks:`, unlockedTasks);
+        
+        const unlockEntry = {
+          taskId,
+          subtaskId,
+          unlockedAt: new Date().toISOString(),
+          unlockedBy: approvedBy
+        };
+        
+        // Check if already unlocked
+        const alreadyUnlocked = unlockedTasks.some(
+          ut => ut.taskId === taskId && ut.subtaskId === subtaskId
+        );
+        
+        console.log(`🔍 Already unlocked:`, alreadyUnlocked);
+        
+        if (!alreadyUnlocked) {
+          unlockedTasks.push(unlockEntry);
+          console.log(`📋 New unlocked tasks array:`, unlockedTasks);
+          
+          // Import workspace model update function directly
+          const DynamoWorkspace = await import('../../workspace/models/DynamoWorkspace.js');
+          const updated = await DynamoWorkspace.updateWorkspace(workspaceId, { unlockedTasks });
+          console.log(`✅ Task ${taskId}/Subtask ${subtaskId} unlocked in workspace`);
+          console.log(`📋 Updated workspace returned:`, updated ? 'Success' : 'Failed');
+        }
+      }
+    }
+
+    // Notify the requester
+    if (post.unlockRequest.requestedBy) {
+      try {
+        const notification = {
+          recipientId: post.unlockRequest.requestedBy,
+          senderId: approvedBy,
+          senderName: approvedByName,
+          type: approved ? 'unlock_approved' : 'unlock_rejected',
+          message: `Your unlock request was ${approved ? 'approved' : 'rejected'} by ${approvedByName}`,
+          workspaceId,
+          taskId,
+          subtaskId,
+          postId,
+          read: false
+        };
+        
+        await DynamoNotification.createNotification(notification);
+        WebSocket.emitNotification(post.unlockRequest.requestedBy, notification);
+      } catch (notifError) {
+        console.error(`Error sending notification:`, notifError);
+      }
+    }
+    
+    // If approved, notify all workspace collaborators (vendors) to refresh
+    if (approved) {
+      try {
+        const workspace = await getWorkspaceById(workspaceId);
+        if (workspace && workspace.sharedWith) {
+          console.log(`📢 Notifying all workspace collaborators about unlock approval`);
+          for (const collabId of workspace.sharedWith) {
+            // Skip the approver
+            if (collabId === approvedBy) continue;
+            
+            try {
+              const vendorNotification = {
+                recipientId: collabId,
+                senderId: approvedBy,
+                senderName: approvedByName,
+                type: 'workspace_unlocked',
+                message: `Task/Subtask has been unlocked for editing by ${approvedByName}`,
+                workspaceId,
+                taskId,
+                subtaskId,
+                postId,
+                read: false
+              };
+              
+              await DynamoNotification.createNotification(vendorNotification);
+              WebSocket.emitNotification(collabId, vendorNotification);
+              console.log(`✅ Notified collaborator ${collabId} about unlock`);
+            } catch (notifError) {
+              console.error(`Error sending notification to ${collabId}:`, notifError);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error notifying collaborators about unlock:', error);
+      }
+    }
+
+    console.log(`✅ Unlock request ${approved ? 'approved' : 'rejected'} successfully`);
+    res.status(200).send({ 
+      message: `Unlock request ${approved ? 'approved' : 'rejected'} successfully`,
+      unlockRequest
+    });
+  } catch (error) {
+    console.error('Failed to approve/reject unlock request:', error);
+    res.status(500).send({ message: 'Failed to process unlock request.', error: error.message });
+  }
+};
