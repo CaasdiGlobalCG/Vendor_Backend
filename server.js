@@ -71,16 +71,16 @@ const allowedOrigins = Array.from(
 const server = http.createServer(app);
 
 // Debug: Log ALL requests to the server
-server.on('request', (req, res) => {
-  if (req.url.includes('notifications/ws')) {
-    console.log(`🔍 HTTP Request (not upgrade): ${req.method} ${req.url}`);
-  }
-});
+// server.on('request', (req, res) => {
+//   if (req.url.includes('notifications/ws')) {
+//     console.log(`🔍 HTTP Request (not upgrade): ${req.method} ${req.url}`);
+//   }
+// });
 
-// Debug: Log connection events
-server.on('connection', (socket) => {
-  console.log('📡 New TCP connection established');
-});
+// // Debug: Log connection events
+// server.on('connection', (socket) => {
+//   console.log('📡 New TCP connection established');
+// });
 
 
 // Connect to MongoDB (still needed for GoogleUser model)

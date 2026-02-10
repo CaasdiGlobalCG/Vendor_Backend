@@ -6,12 +6,12 @@ import nodemailer from 'nodemailer';
 
 // Email transport configuration (same as vendor controller)
 const transporter = nodemailer.createTransport({
-  host: 'smtpout.secureserver.net', // GoDaddy SMTP server
-  port: 465,
-  secure: true,
+  host: 'smtp.office365.com', // Outlook SMTP server
+  port: 587,
+  secure: false, // Use STARTTLS
   auth: {
-    user: 'virtualspace@caasdiglobal.in',
-    pass: 'virtualspace@2678'
+    user: process.env.EMAIL_USER || 'tech@caasdiglobal.in',
+    pass: process.env.EMAIL_PASSWORD
   }
 });
 
@@ -536,7 +536,7 @@ export const sendOTP = async (req, res) => {
 
     // Send email
     const mailOptions = {
-      from: 'virtualspace@caasdiglobal.in',
+      from: process.env.EMAIL_FROM || 'finance@caasdiglobal.in',
       to: email,
       subject: 'Your MFA Verification Code',
       html: `

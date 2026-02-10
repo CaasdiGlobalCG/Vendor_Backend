@@ -16,11 +16,11 @@ export const initWebSocketServer = (server) => {
     
     // Handle upgrade - register this FIRST before anything else
     server.on('upgrade', (request, socket, head) => {
-        console.log('========================================');
-        console.log('🔌 UPGRADE EVENT RECEIVED!');
-        console.log('🔌 URL:', request.url);
-        console.log('🔌 Headers:', JSON.stringify(request.headers, null, 2));
-        console.log('========================================');
+        // console.log('========================================');
+        // console.log('🔌 UPGRADE EVENT RECEIVED!');
+        // console.log('🔌 URL:', request.url);
+        // console.log('🔌 Headers:', JSON.stringify(request.headers, null, 2));
+        // console.log('========================================');
         
         const pathname = url.parse(request.url).pathname;
         

@@ -11,12 +11,12 @@ import nodemailer from 'nodemailer';
 
 // Email transport configuration
 const transporter = nodemailer.createTransport({
-  host: 'smtpout.secureserver.net', // GoDaddy SMTP server
-  port: 465,
-  secure: true,
+  host: 'smtp.office365.com', // Outlook SMTP server
+  port: 587,
+  secure: false, // Use STARTTLS
   auth: {
-    user: 'virtualspace@caasdiglobal.in',
-    pass: 'virtualspace@2678'
+    user: process.env.EMAIL_USER || 'tech@caasdiglobal.in',
+    pass: process.env.EMAIL_PASSWORD
   }
 });
 
@@ -150,7 +150,7 @@ export const submitVendorForm = async (req, res) => {
     // Send notification email to auditor
     try {
       await transporter.sendMail({
-        from: 'virtualspace@caasdiglobal.in',
+        from: process.env.EMAIL_FROM || 'finance@caasdiglobal.in',
         to: 'dhanush@caasdiglobal.in',
         subject: 'New Vendor Submission!',
         text: `New vendor form submitted by ${formData.vendorDetails.primaryContactName}`,
@@ -165,7 +165,7 @@ export const submitVendorForm = async (req, res) => {
     // Send confirmation email to vendor
     try {
       await transporter.sendMail({
-        from: 'virtualspace@caasdiglobal.in',
+        from: process.env.EMAIL_FROM || 'finance@caasdiglobal.in',
         to: primaryEmail,
         subject: 'Vendor Application Submitted',
         text: `Dear ${formData.vendorDetails.primaryContactName}, your vendor application has been submitted successfully and is pending review.`,
@@ -380,7 +380,7 @@ export const approveVendor = async (req, res) => {
     // Send approval email to vendor
     try {
       await transporter.sendMail({
-        from: 'virtualspace@caasdiglobal.in',
+        from: process.env.EMAIL_FROM || 'finance@caasdiglobal.in',
         to: vendor.vendorDetails.primaryContactEmail || vendor.email,
         subject: 'Vendor Application Approved',
         text: `Dear ${vendor.vendorDetails.primaryContactName || 'Vendor'}, your vendor application has been approved.`,
@@ -460,7 +460,7 @@ export const rejectVendor = async (req, res) => {
 
     try {
       await transporter.sendMail({
-        from: 'virtualspace@caasdiglobal.in',
+        from: process.env.EMAIL_FROM || 'finance@caasdiglobal.in',
         to: vendor.vendorDetails?.primaryContactEmail || vendor.email,
         subject: 'Vendor Application Rejected',
         text: `Dear ${vendor.vendorDetails?.primaryContactName || vendor.name || 'Vendor'}, your vendor application has been rejected.`,

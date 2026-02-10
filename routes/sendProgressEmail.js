@@ -4,12 +4,12 @@ import nodemailer from 'nodemailer';
 const router = express.Router();
 
 const transporter = nodemailer.createTransport({
-  host: 'smtpout.secureserver.net', // GoDaddy SMTP host
+  host: 'smtp.office365.com', // Outlook SMTP host
   port: 587,
-  secure: false,
+  secure: false, // Use STARTTLS
   auth: {
-    user: 'virtualspace@caasdiglobal.in',
-    pass: 'virtualspace@2678',
+    user: process.env.EMAIL_USER || 'tech@caasdiglobal.in',
+    pass: process.env.EMAIL_PASSWORD,
   },
 });
 
@@ -21,7 +21,7 @@ router.post('/send-progress-email', async (req, res) => {
 
   try {
     const mailOptions = {
-      from: 'virtualspace@caasdiglobal.in', // GoDaddy domain email
+      from: process.env.EMAIL_FROM || 'tech@caasdiglobal.in', // Outlook shared mailbox
       to: emails.join(','),
       subject: 'Workspace Progress Shared',
       text: `A workspace has been shared with you. Link: ${workspaceLink}`,

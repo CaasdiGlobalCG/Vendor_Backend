@@ -279,58 +279,11 @@ export const updateWorkspace = async (id, workspaceData) => {
     console.log(`🔄 DynamoDB: Attempting update in workspaces_table with workspaceId:`, workspaceId);
     const result = await dynamoDB.update(params).promise();
     console.log(`✅ DynamoDB: Update successful in workspaces_table`);
-    console.log('📊 DynamoDB: Result nodes count:', result.Attributes?.nodes?.length || 0);
-    console.log('📊 DynamoDB: Result nodes type:', Array.isArray(result.Attributes?.nodes) ? 'Array' : typeof result.Attributes?.nodes);
-    if (result.Attributes?.nodes?.length > 0) {
-      console.log('📊 DynamoDB: First node from DB:', JSON.stringify(result.Attributes.nodes[0], null, 2));
-    } else if (result.Attributes?.nodes !== undefined) {
-      console.log('⚠️ DynamoDB: nodes field exists but is empty or not an array:', result.Attributes.nodes);
-    }
-    
+
     if (result.Attributes) {
       const updatedItem = { ...result.Attributes, _id: result.Attributes.workspaceId || result.Attributes.id || result.Attributes.projectId };
-      console.log('✅ DynamoDB: Returning updated workspace with nodes count:', updatedItem.nodes?.length || 0);
-      // Verify the nodes were actually saved
-      if (updatedItem.nodes?.length !== cleanWorkspaceData.nodes?.length) {
-        console.warn('⚠️ DynamoDB: Node count mismatch! Expected:', cleanWorkspaceData.nodes?.length, 'Got:', updatedItem.nodes?.length);
-      }
       
-      // Immediately verify by reading back from DB
-      console.log('🔍 DynamoDB: Immediately verifying by reading back from DB...');
-      try {
-        const verifyParams = {
-          TableName: WORKSPACES_TABLE,
-          Key: { workspaceId: workspaceId }
-        };
-        const verifyResult = await dynamoDB.get(verifyParams).promise();
-        if (verifyResult.Item) {
-          console.log('🔍 DynamoDB: Verification - nodes count in DB:', verifyResult.Item.nodes?.length || 0);
-          console.log('🔍 DynamoDB: Verification - nodes type:', Array.isArray(verifyResult.Item.nodes) ? 'Array' : typeof verifyResult.Item.nodes);
-          
-          // Check approval objects in verified data
-          const verifiedNodesWithApproval = verifyResult.Item.nodes?.filter(n => n.data?.approvalStatus) || [];
-          console.log('🔍 DynamoDB: Verified nodes with approval:', verifiedNodesWithApproval.length);
-          verifiedNodesWithApproval.forEach((node, idx) => {
-            console.log(`  Verified Node ${idx}:`, {
-              id: node.id,
-              approvalStatus: node.data?.approvalStatus,
-              hasPmApproval: !!node.data?.pmApproval,
-              hasClientApproval: !!node.data?.clientApproval,
-              pmApprovalObj: node.data?.pmApproval,
-              clientApprovalObj: node.data?.clientApproval
-            });
-          });
-          
-          if (verifyResult.Item.nodes?.length !== cleanWorkspaceData.nodes?.length) {
-            console.error('❌ DynamoDB: VERIFICATION FAILED! Nodes not persisted!');
-            console.error('❌ DynamoDB: Expected:', cleanWorkspaceData.nodes?.length, 'Got in DB:', verifyResult.Item.nodes?.length);
-          } else {
-            console.log('✅ DynamoDB: Verification passed - nodes persisted correctly!');
-          }
-        }
-      } catch (verifyErr) {
-        console.error('❌ DynamoDB: Error during immediate verification:', verifyErr.message);
-      }
+      // Verification section removed - root-level nodes no longer needed
       
       return updatedItem;
     }
@@ -353,16 +306,14 @@ export const updateWorkspace = async (id, workspaceData) => {
     mergedItem.updatedAt = new Date().toISOString();
     
     console.log(`ℹ️ DynamoDB: Falling back to PUT operation with workspaceId:`, upsertId);
-    console.log('📊 DynamoDB: Nodes count in PUT:', mergedItem.nodes?.length || 0);
-    
+
     const putParams = { 
       TableName: WORKSPACES_TABLE, 
       Item: mergedItem 
     };
     await dynamoDB.put(putParams).promise();
     console.log(`✅ DynamoDB: PUT successful in workspaces_table with workspaceId`, upsertId);
-    console.log('📊 DynamoDB: Upserted nodes count:', mergedItem.nodes?.length || 0);
-    
+
     // Verify by reading back the item
     const verifyParams = {
       TableName: WORKSPACES_TABLE,
@@ -370,7 +321,6 @@ export const updateWorkspace = async (id, workspaceData) => {
     };
     const verifyResult = await dynamoDB.get(verifyParams).promise();
     if (verifyResult.Item) {
-      console.log('✅ DynamoDB: Verified - nodes count in DB:', verifyResult.Item.nodes?.length || 0);
       return { ...verifyResult.Item, _id: verifyResult.Item.workspaceId || verifyResult.Item.id };
     }
     
