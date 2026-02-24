@@ -134,7 +134,7 @@ app.get('/health', (req, res) => {
     success: true, 
     message: 'VendorDashboard Backend is running', 
     timestamp: new Date().toISOString(),
-    modules: ['PM', 'Vendor', 'Workspace']
+    modules: ['PM', 'Vendor', 'Workspace', 'RBAC']
   });
 });
 
@@ -202,6 +202,12 @@ async function loadModules() {
     app.use('/api', postServiceRoutes);
     app.use('/api', postServiceNotificationRoutes);
     console.log('✅ Post Services Module loaded');
+
+    // Load RBAC Module (Phase 1 — permissive mode)
+    console.log('🔄 Loading RBAC Module...');
+    const rbacModule = await import('./modules/rbac/index.js');
+    app.use('/api/rbac', rbacModule.rbacRoutes);
+    console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
 
     console.log('🎉 All modules loaded successfully');
     
