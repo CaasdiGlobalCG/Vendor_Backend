@@ -8,6 +8,7 @@
 
 // Routes
 export { default as rbacRoutes } from './routes/rbacRoutes.js';
+export { default as invitePublicRoutes } from './routes/invitePublicRoutes.js';
 
 // Middleware — exported for use on other module routes
 export { attachRBAC } from './middleware/attachRBAC.js';

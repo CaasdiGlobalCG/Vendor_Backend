@@ -11,6 +11,7 @@ import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { canManageUser } from '../utils/permission.utils.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
+import { sendInvitationEmail } from '../services/emailService.js';
 import crypto from 'crypto';
 
 /**
@@ -199,6 +200,33 @@ export async function inviteMember(req, res) {
       ...(validatedOverrides && { hasOverrides: true }),
     });
 
+    // ── Send invitation email ──
+    // Fetch org name for the email template
+    let orgName = orgId; // fallback to orgId if lookup fails
+    try {
+      const orgResult = await docClient.send(new GetCommand({
+        TableName: TABLES.ORGANIZATIONS,
+        Key: { orgId },
+        ProjectionExpression: 'orgName',
+      }));
+      if (orgResult.Item?.orgName) orgName = orgResult.Item.orgName;
+    } catch (orgErr) {
+      console.warn('[RBAC] Could not fetch org name for invite email:', orgErr.message);
+    }
+
+    // Inviter name from auth context (Cognito JWT decoded name)
+    const inviterName = req.auth?.name || req.auth?.email || 'A team member';
+
+    const emailResult = await sendInvitationEmail({
+      to: normalizedEmail,
+      inviteToken,
+      orgName,
+      roleName: targetRole.roleName,
+      inviterName,
+      message,
+      orgType,
+    });
+
     return res.status(201).json({
       invitation: {
         inviteId: invitation.inviteId,
@@ -208,7 +236,10 @@ export async function inviteMember(req, res) {
         status: invitation.status,
         expiresAt: invitation.expiresAt,
       },
-      message: `Invitation sent to ${normalizedEmail}`,
+      emailSent: emailResult.success,
+      message: emailResult.success
+        ? `Invitation sent to ${normalizedEmail}`
+        : `Invitation created for ${normalizedEmail} (email delivery pending)`,
     });
   } catch (error) {
     console.error('[RBAC] inviteMember error:', error);

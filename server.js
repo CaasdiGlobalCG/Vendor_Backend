@@ -207,6 +207,8 @@ async function loadModules() {
     console.log('🔄 Loading RBAC Module...');
     const rbacModule = await import('./modules/rbac/index.js');
     app.use('/api/rbac', rbacModule.rbacRoutes);
+    // Public invite routes — no auth required (invitee has no account yet)
+    app.use('/api/rbac/invite', rbacModule.invitePublicRoutes);
     console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
 
     console.log('🎉 All modules loaded successfully');
