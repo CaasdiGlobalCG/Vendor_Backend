@@ -65,6 +65,8 @@ jobs:
           tags: |
             ${{ steps.repo.outputs.REPO }}:${{ env.IMAGE_TAG }}
             ${{ steps.repo.outputs.REPO }}:latest
+          build-args: |
+            VENDOR_FRONTEND_URL=${{secrets.VITE_VENDOR_PROD_URL}}
           platforms: linux/amd64
 
       - name: Build and push image (staging)
@@ -76,6 +78,8 @@ jobs:
           tags: |
             ${{ steps.repo-staging.outputs.REPO_STAGING }}:${{ env.IMAGE_TAG }}
             ${{ steps.repo-staging.outputs.REPO_STAGING }}:latest
+          build-args: |
+            VENDOR_FRONTEND_URL=${{secrets.VITE_VENDOR_STAGING_URL}}
           platforms: linux/amd64
 
       - name: Setup kubectl

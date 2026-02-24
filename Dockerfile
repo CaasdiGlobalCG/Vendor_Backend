@@ -1,6 +1,10 @@
 # Use official Node.js LTS version
 FROM node:18-alpine
 
+# Accept build argument for vendor frontend URL (used by email invite links)
+ARG VENDOR_FRONTEND_URL
+ENV VENDOR_FRONTEND_URL=${VENDOR_FRONTEND_URL}
+
 # Set working directory
 WORKDIR /app
 
