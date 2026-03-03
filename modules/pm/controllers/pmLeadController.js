@@ -408,6 +408,8 @@ export const pmDecisionOnLead = async (req, res) => {
     const { pmId } = req.pmUser;
     const { approved, feedback, workspaceAccess = false } = req.body;
 
+    let collaborativeWorkspaceId = null;
+
     console.log('⚖️ PM decision on lead:', { leadId, approved, pmId });
 
     // Validation
@@ -501,7 +503,7 @@ export const pmDecisionOnLead = async (req, res) => {
           console.log('🏗️ Creating collaborative workspace for approved vendor');
           
           // Import workspace access controller
-          const { createOrGetCollaborativeWorkspace } = await import('./workspaceAccessController.js');
+          const { createOrGetCollaborativeWorkspace } = await import('../../workspace/controllers/workspaceAccessController.js');
           
           // Create workspace request object
           const workspaceReq = {
@@ -515,7 +517,6 @@ export const pmDecisionOnLead = async (req, res) => {
           };
           
           // Create collaborative workspace and capture the workspace ID
-          let collaborativeWorkspaceId = null;
           const workspaceRes = {
             json: (data) => {
               console.log('✅ Workspace created:', data.workspace?.workspaceId);
@@ -567,7 +568,7 @@ export const pmDecisionOnLead = async (req, res) => {
         pmId: pmId,
         leadTitle: lead.leadTitle,
         pmDecision: pmDecision,
-        workspaceId: approved && workspaceAccess ? 'WS-SAMPLE-001' : null // Would be dynamic in real system
+        workspaceId: approved && workspaceAccess ? (collaborativeWorkspaceId || null) : null
       };
       
       notifyVendorOfPMDecision(lead.vendorId, notificationData);

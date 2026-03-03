@@ -2,7 +2,7 @@ import * as DynamoWorkspace from '../../workspace/models/DynamoWorkspace.js';
 import * as DynamoLead from '../models/DynamoLead.js';
 import { sendLeadNotification } from '../../../websocket/notificationSocket.js';
 import { v4 as uuidv4 } from 'uuid';
-import { dynamoDB, PM_PROJECTS_TABLE } from '../../../config/aws.js';
+import { dynamoDB, PM_PROJECTS_TABLE, WORKSPACES_TABLE } from '../../../config/aws.js';
 
 // Create workspace for PM project with vendor collaboration
 export const createWorkspaceForPM = async (req, res) => {
@@ -17,21 +17,89 @@ export const createWorkspaceForPM = async (req, res) => {
 
     console.log('🚀 PM Integration: Creating workspace for project:', projectId);
 
-    // Fetch project details to get clientId
+    // Fetch project details to get clientId + avoid duplicate workspace creation
     console.log('📋 Fetching project details for:', projectId);
     let clientId = null;
+    let existingWorkspaceId = null;
     try {
       const projectResult = await dynamoDB.get({
         TableName: PM_PROJECTS_TABLE,
         Key: { projectId }
       }).promise();
-      
-      if (projectResult.Item && projectResult.Item.clientId) {
-        clientId = projectResult.Item.clientId;
-        console.log('✅ Found client:', clientId);
+
+      if (projectResult.Item) {
+        if (projectResult.Item.clientId) {
+          clientId = projectResult.Item.clientId;
+          console.log('✅ Found client:', clientId);
+        }
+        if (projectResult.Item.workspaceId) {
+          existingWorkspaceId = String(projectResult.Item.workspaceId);
+          console.log('✅ Project already has workspaceId:', existingWorkspaceId);
+        }
       }
     } catch (error) {
       console.error('⚠️ Could not fetch project details:', error.message);
+    }
+
+    // If project already linked to a workspace, return it (prevents duplicates)
+    if (existingWorkspaceId) {
+      return res.json({
+        success: true,
+        workspaceId: existingWorkspaceId,
+        accessUrl: `/VendorDashboard/workspace/${existingWorkspaceId}`,
+        invitedVendors: invitedVendors.length,
+        message: 'Collaborative workspace already exists for this project'
+      });
+    }
+
+    // If the project record isn't linked yet, but a workspace already exists for this project,
+    // reuse it (prevents creating multiple workspaces for the same project).
+    try {
+      const scanRes = await dynamoDB.scan({
+        TableName: WORKSPACES_TABLE,
+        FilterExpression: 'projectId = :projectId',
+        ExpressionAttributeValues: { ':projectId': projectId },
+      }).promise();
+
+      const items = Array.isArray(scanRes.Items) ? scanRes.Items : [];
+      if (items.length > 0) {
+        items.sort((a, b) => {
+          const at = String(a?.createdAt || a?.updatedAt || '');
+          const bt = String(b?.createdAt || b?.updatedAt || '');
+          return bt.localeCompare(at);
+        });
+        const picked = items[0];
+        const pickedId = picked?.workspaceId || picked?.id || null;
+
+        if (pickedId) {
+          const now = new Date().toISOString();
+          try {
+            await dynamoDB.update({
+              TableName: PM_PROJECTS_TABLE,
+              Key: { projectId },
+              UpdateExpression: 'SET workspaceId = :workspaceId, workspaceCreated = :workspaceCreated, updatedAt = :updatedAt',
+              ExpressionAttributeValues: {
+                ':workspaceId': String(pickedId),
+                ':workspaceCreated': true,
+                ':updatedAt': now,
+              },
+            }).promise();
+            console.log('✅ Backfilled workspaceId on PM project from existing workspaces_table record');
+          } catch (linkErr) {
+            console.error('⚠️ Failed to backfill workspaceId on PM project:', linkErr?.message || linkErr);
+          }
+
+          return res.json({
+            success: true,
+            workspaceId: String(pickedId),
+            accessUrl: `/VendorDashboard/workspace/${String(pickedId)}`,
+            invitedVendors: invitedVendors.length,
+            message: 'Reused existing collaborative workspace for this project'
+          });
+        }
+      }
+    } catch (scanErr) {
+      console.error('⚠️ Could not scan workspaces_table for existing workspace:', scanErr?.message || scanErr);
     }
 
     // Build sharedWith and collaborators list
@@ -93,6 +161,24 @@ export const createWorkspaceForPM = async (req, res) => {
     };
 
     const workspace = await DynamoWorkspace.createWorkspace(workspaceData);
+
+    // Persist workspaceId on the PM project so other systems (e.g. Sales-Backend) can resolve it.
+    try {
+      const now = new Date().toISOString();
+      await dynamoDB.update({
+        TableName: PM_PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: 'SET workspaceId = :workspaceId, workspaceCreated = :workspaceCreated, updatedAt = :updatedAt',
+        ExpressionAttributeValues: {
+          ':workspaceId': workspace.workspaceId,
+          ':workspaceCreated': true,
+          ':updatedAt': now,
+        },
+      }).promise();
+      console.log('✅ Linked workspace to PM project:', { projectId, workspaceId: workspace.workspaceId });
+    } catch (linkErr) {
+      console.error('⚠️ Failed to link workspaceId on PM project:', linkErr?.message || linkErr);
+    }
 
     // Send notifications to invited vendors
     for (const vendor of invitedVendors) {
