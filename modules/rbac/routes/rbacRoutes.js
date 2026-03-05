@@ -12,6 +12,8 @@ import { getMyRBAC } from '../controllers/meController.js';
 import { listMembers, inviteMember, changeMemberRole, removeMember } from '../controllers/membersController.js';
 import { listRoles, getRoleDetails, createRole, updateRole, deleteRole } from '../controllers/rolesController.js';
 import { listInvitations, cancelInvitation } from '../controllers/invitationsController.js';
+import { getAuditLogs } from '../controllers/auditLogController.js';
+import { listPermissions, listPlatforms } from '../controllers/permissionsController.js';
 import { attachRBAC } from '../middleware/attachRBAC.js';
 import { requirePermission } from '../middleware/requirePermission.js';
 import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
@@ -79,5 +81,22 @@ router.get('/invitations', requirePermission('user_management', 'view'), listInv
 
 /** DELETE /api/rbac/invitations/:inviteId — cancel a pending invitation */
 router.delete('/invitations/:inviteId', requirePermission('user_management', 'edit'), cancelInvitation);
+
+// ──────────────────────────────────────
+// Phase 3 — Permissions Catalog
+// ──────────────────────────────────────
+
+/** GET /api/rbac/permissions?platform=vendor — list all available permissions for a platform */
+router.get('/permissions', requirePermission('user_management', 'view'), listPermissions);
+
+/** GET /api/rbac/permissions/platforms — list all platform metadata (for invite modal) */
+router.get('/permissions/platforms', requirePermission('user_management', 'view'), listPlatforms);
+
+// ──────────────────────────────────────
+// Activity / Audit Logs
+// ──────────────────────────────────────
+
+/** GET /api/rbac/audit-logs — activity logs (hierarchy-filtered) */
+router.get('/audit-logs', getAuditLogs);
 
 export default router;

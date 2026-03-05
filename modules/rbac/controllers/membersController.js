@@ -11,6 +11,7 @@ import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { canManageUser } from '../utils/permission.utils.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
+import { derivePlatformAccess } from '../config/modules.js';
 import { sendInvitationEmail } from '../services/emailService.js';
 import crypto from 'crypto';
 
@@ -106,11 +107,12 @@ export async function inviteMember(req, res) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    // ── Check target role exists ──
+    // ── Check target role exists (include permissions for platform derivation) ──
     const roleResult = await docClient.send(new GetCommand({
       TableName: TABLES.ROLES,
       Key: { orgId, roleId },
-      ProjectionExpression: 'roleId, roleName, roleLevel',
+      ProjectionExpression: 'roleId, roleName, roleLevel, #perms',
+      ExpressionAttributeNames: { '#perms': 'permissions' },
     }));
 
     const targetRole = roleResult.Item;
@@ -145,6 +147,21 @@ export async function inviteMember(req, res) {
       }
     }
 
+    // ── Derive platformAccess from role's effective permissions ──
+    let rolePerms = Array.isArray(targetRole.permissions)
+      ? targetRole.permissions
+      : targetRole.permissions instanceof Set
+        ? [...targetRole.permissions]
+        : [];
+    // Apply overrides to get effective permissions for derivation
+    if (validatedOverrides) {
+      const permSet = new Set(rolePerms);
+      if (validatedOverrides.added) validatedOverrides.added.forEach(p => permSet.add(p));
+      if (validatedOverrides.removed) validatedOverrides.removed.forEach(p => permSet.delete(p));
+      rolePerms = [...permSet];
+    }
+    const autoPlatformAccess = derivePlatformAccess(rolePerms, orgType);
+
     // ── Create invitation ──
     const inviteId = `inv_${crypto.randomUUID()}`;
     const inviteToken = crypto.randomUUID();
@@ -162,6 +179,7 @@ export async function inviteMember(req, res) {
       inviteToken,
       status: 'pending',
       message: message || '',
+      platformAccess: autoPlatformAccess,
       ...(validatedOverrides && { permissionOverrides: validatedOverrides }),
       createdAt: now,
       expiresAt,
@@ -182,6 +200,7 @@ export async function inviteMember(req, res) {
       status: 'invited',
       inviteId,
       invitedBy: callerId,
+      platformAccess: autoPlatformAccess,
       ...(validatedOverrides && { permissionOverrides: validatedOverrides }),
       joinedAt: now,
       updatedAt: now,
@@ -198,7 +217,7 @@ export async function inviteMember(req, res) {
       roleId,
       inviteId,
       ...(validatedOverrides && { hasOverrides: true }),
-    });
+    }, req.auth?.email);
 
     // ── Send invitation email ──
     // Fetch org name for the email template
@@ -335,7 +354,7 @@ export async function changeMemberRole(req, res) {
       targetUserId,
       oldRoleId: targetMember.roleId,
       newRoleId,
-    });
+    }, req.auth?.email);
 
     return res.status(200).json({
       member: {
@@ -413,7 +432,7 @@ export async function removeMember(req, res) {
       targetUserId,
       targetEmail: targetMember.email,
       previousRole: targetMember.roleId,
-    });
+    }, req.auth?.email);
 
     return res.status(200).json({
       success: true,
@@ -433,19 +452,21 @@ export async function removeMember(req, res) {
  * Log an audit event to rbac_audit_log.
  * Fire-and-forget — never blocks the main request.
  */
-async function logAudit(orgId, userId, action, details = {}) {
+async function logAudit(orgId, userId, action, details = {}, actorEmail = null) {
   try {
     const eventId = `${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+    const item = {
+      orgId,
+      eventId,
+      userId,
+      action,
+      details,
+      timestamp: new Date().toISOString(),
+    };
+    if (actorEmail) item.actorEmail = actorEmail;
     await docClient.send(new PutCommand({
       TableName: TABLES.AUDIT_LOG,
-      Item: {
-        orgId,
-        eventId,
-        userId,
-        action,
-        details,
-        timestamp: new Date().toISOString(),
-      },
+      Item: item,
     }));
   } catch (error) {
     // Never block the main request for audit failures

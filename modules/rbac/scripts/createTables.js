@@ -183,6 +183,34 @@ const TABLE_DEFINITIONS = [
     ],
     BillingMode: 'PAY_PER_REQUEST',
   },
+
+  // 7. rbac_permissions — system-wide permission catalog (reference table)
+  //    PK: platform (vendor|client|sales)  SK: permissionId (e.g. products:view)
+  //    Used by: Role editor UI (list available permissions), validation on role create/update
+  //    NOT used at runtime by attachRBAC (permissions cached on rbac_roles records)
+  {
+    TableName: TABLES.PERMISSIONS,
+    KeySchema: [
+      { AttributeName: 'platform', KeyType: 'HASH' },
+      { AttributeName: 'permissionId', KeyType: 'RANGE' },
+    ],
+    AttributeDefinitions: [
+      { AttributeName: 'platform', AttributeType: 'S' },
+      { AttributeName: 'permissionId', AttributeType: 'S' },
+      { AttributeName: 'resource', AttributeType: 'S' },
+    ],
+    GlobalSecondaryIndexes: [
+      {
+        IndexName: 'ResourceIndex',
+        KeySchema: [
+          { AttributeName: 'platform', KeyType: 'HASH' },
+          { AttributeName: 'resource', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+    BillingMode: 'PAY_PER_REQUEST',
+  },
 ];
 
 // ──────────────────────────────────────

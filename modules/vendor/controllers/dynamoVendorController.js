@@ -1,5 +1,6 @@
 import * as DynamoVendor from '../models/DynamoVendor.js';
 import * as DynamoGoogleUser from '../../../models/DynamoGoogleUser.js';
+import { seedRolesForOrg } from '../../rbac/scripts/seedDefaults.js';
 import GoogleUser from '../../../models/GoogleUser.js'; // Keep for backward compatibility during migration
 import multer from 'multer';
 import nodemailer from 'nodemailer';
@@ -298,6 +299,13 @@ export const submitVendorForm = async (req, res) => {
         };
       }
       vendor = await DynamoVendor.createVendor(newVendorData);
+      // Seed default RBAC roles for new vendor org (safe to re-run)
+      try {
+        await seedRolesForOrg(vendor.vendorId || vendor.id, 'vendor');
+        console.log('Seeded default RBAC roles for vendor:', vendor.vendorId || vendor.id);
+      } catch (seedErr) {
+        console.warn('Failed to seed RBAC roles (non-blocking):', seedErr?.message);
+      }
     }
 
     // Send notification email to auditor

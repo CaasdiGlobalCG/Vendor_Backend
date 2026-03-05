@@ -5,20 +5,30 @@ export const createUser = async (userData) => {
   const id = uuidv4();
   const now = new Date().toISOString();
   const normalizedEmail = String(userData.email || '').trim().toLowerCase();
+
+  // Extract known fields with defaults, then spread any extra fields
+  // (e.g. isTeamMember, parentOrgId) so they're preserved in the record.
+  const {
+    email: _e, displayName, lastSelectedRole, role, lastSelectedRoleUpdatedAt,
+    status, hasFilledForm, roleSelected, hasPasskey, passkeyRegisteredAt,
+    ...extraFields
+  } = userData;
+
   const item = {
     userId: id,
     id,
     email: normalizedEmail,
-    displayName: userData.displayName || normalizedEmail?.split('@')[0] || '',
-    lastSelectedRole: userData.lastSelectedRole || userData.role,
-    lastSelectedRoleUpdatedAt: userData.lastSelectedRoleUpdatedAt || null,
-    status: userData.status || 'pending',
-    hasFilledForm: userData.hasFilledForm || false,
-    roleSelected: userData.roleSelected === true,
-    hasPasskey: userData.hasPasskey || false,
-    passkeyRegisteredAt: userData.passkeyRegisteredAt || null,
+    displayName: displayName || normalizedEmail?.split('@')[0] || '',
+    lastSelectedRole: lastSelectedRole || role,
+    lastSelectedRoleUpdatedAt: lastSelectedRoleUpdatedAt || null,
+    status: status || 'pending',
+    hasFilledForm: hasFilledForm || false,
+    roleSelected: roleSelected === true,
+    hasPasskey: hasPasskey || false,
+    passkeyRegisteredAt: passkeyRegisteredAt || null,
     createdAt: now,
     updatedAt: now,
+    ...extraFields,
   };
   await dynamoDB.put({ TableName: USERS_TABLE, Item: item }).promise();
   return { ...item, _id: id };

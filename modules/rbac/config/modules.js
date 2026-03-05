@@ -96,3 +96,90 @@ export function getAllPermissions(modules) {
 export function getModuleKeys(modules) {
   return Object.keys(modules);
 }
+
+/**
+ * Sales-side module registry.
+ * Mirrors SALES_MODULE_CONFIG from the sales whiteboard-ui frontend.
+ */
+export const SALES_MODULES = {
+  dashboard:       { label: 'Dashboard',        actions: ['view', 'export', 'manage'] },
+  orders:          { label: 'Orders & Sales',   actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  products:        { label: 'Products',         actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  enquiry:         { label: 'Enquiry / RFQ',    actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  quotations:      { label: 'Quotations',       actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  shipments:       { label: 'Shipments',        actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  inventory:       { label: 'Inventory',        actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  warranty:        { label: 'Warranty',         actions: ['view', 'create', 'edit', 'delete', 'manage'] },
+  notifications:   { label: 'Notifications',    actions: ['view', 'edit', 'delete', 'manage'] },
+  settings:        { label: 'Settings',         actions: ['view', 'edit', 'manage'] },
+  user_management: { label: 'User Management',  actions: ['view', 'create', 'edit', 'delete', 'export', 'manage'] },
+  activity_log:    { label: 'Activity Log',     actions: ['view', 'export', 'manage'] },
+};
+
+/**
+ * Derive platformAccess from a user's permissions array.
+ * Instead of storing manual platform toggles, we check which modules
+ * the user has permissions for and map them to platforms.
+ *
+ * WHY: Platform access is scoped by the org that invited the member.
+ *      - Vendor org invite → 'vendor' (always) + 'sales' (if sales-module perms exist)
+ *      - Client org invite → 'client' only
+ *      - Super Admin (*:*) → all 3 platforms regardless of org
+ *      Cross-platform access (e.g., vendor member accessing client) only happens
+ *      for Super Admins or when separately invited from the other platform.
+ *
+ * @param {string[]} permissions - Array of 'module:action' strings
+ * @param {string}   [orgType]   - 'vendor' or 'client' — determines which platforms are reachable
+ * @returns {string[]} Array of platform strings: ['vendor', 'client', 'sales']
+ */
+export function derivePlatformAccess(permissions, orgType) {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    // Default fallback based on org type
+    return orgType === 'client' ? ['client'] : ['vendor'];
+  }
+  // Super admin gets all platforms regardless of org type
+  if (permissions.includes('*:*')) return ['vendor', 'client', 'sales'];
+
+  // ── Org-type-aware derivation ──
+  // Vendor members can access vendor + sales (if they have sales-module perms).
+  // Client members can only access client.
+  // This prevents shared module codes (dashboard, orders, etc.) from leaking
+  // cross-platform access that was never intended.
+  if (orgType === 'vendor') {
+    const salesModuleKeys = new Set(Object.keys(SALES_MODULES));
+    const platforms = new Set(['vendor']); // Always includes vendor
+    for (const perm of permissions) {
+      const moduleCode = perm.split(':')[0];
+      if (moduleCode && salesModuleKeys.has(moduleCode)) {
+        platforms.add('sales');
+        break; // One match is enough
+      }
+    }
+    return [...platforms];
+  }
+
+  if (orgType === 'client') {
+    // Client org members only get client platform access
+    return ['client'];
+  }
+
+  // ── No orgType provided (backward compat / edge case) ──
+  // Fall back to the old behavior that checks all registries.
+  const vendorModuleKeys = new Set(Object.keys(VENDOR_MODULES));
+  const clientModuleKeys = new Set(Object.keys(CLIENT_MODULES));
+  const salesModuleKeys  = new Set(Object.keys(SALES_MODULES));
+
+  const platforms = new Set();
+
+  for (const perm of permissions) {
+    const moduleCode = perm.split(':')[0];
+    if (!moduleCode) continue;
+    if (vendorModuleKeys.has(moduleCode)) platforms.add('vendor');
+    if (clientModuleKeys.has(moduleCode)) platforms.add('client');
+    if (salesModuleKeys.has(moduleCode))  platforms.add('sales');
+  }
+
+  // Always include at least 'vendor' for backward compat
+  if (platforms.size === 0) platforms.add('vendor');
+  return [...platforms];
+}

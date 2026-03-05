@@ -18,13 +18,11 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '..', '.env') });
 
 const region = process.env.AWS_REGION || 'us-east-1';
 
-const dynamoClient = new DynamoDBClient({
-  region,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
+// Use the default credential provider chain (reads env vars lazily at request
+// time). Passing explicit { accessKeyId, secretAccessKey } here would freeze
+// the values at module-load time — if this module is imported before server.js
+// runs dotenv.config(), both values are undefined and every call fails silently.
+const dynamoClient = new DynamoDBClient({ region });
 
 /**
  * DynamoDB Document Client (v3) for RBAC operations.

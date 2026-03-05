@@ -17,6 +17,7 @@ import jwt from "jsonwebtoken"; // Add jsonwebtoken for token validation
 import jwkToPem from "jwk-to-pem"; // Convert JWK to PEM for verification
 import axios from "axios"; // For fetching JWKS
 import { CognitoIdentityProviderClient, AdminCreateUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { seedRolesForOrg } from '../modules/rbac/scripts/seedDefaults.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -296,14 +297,34 @@ router.post("/set-role", async (req, res) => {
       }
     }
 
-    // Decide next route and ensure vendor presence if needed
+    // Decide next route and ensure vendor presence if needed.
+    // Team members share the org's vendorId/clientId — do NOT create
+    // a separate vendor/client record for them.
     let nextRoute = "/client-onboarding";
-    if (role === "vendor") {
+    const isTeamMember = await (async () => {
+      try {
+        const normalizedEmail = String(user.email || '').trim().toLowerCase();
+        const userRec = await DynamoUser.getUserByEmail(normalizedEmail);
+        return userRec?.isTeamMember === true;
+      } catch { return false; }
+    })();
+
+    if (isTeamMember) {
+      // Team members skip record creation — they use the org's existing record.
+      nextRoute = role === 'client' ? '/home' : '/VendorDashboard';
+    } else if (role === "vendor") {
       const email = String(user.email || '').trim().toLowerCase();
       let vendor = email ? await DynamoVendor.getVendorByEmail(email) : null;
       if (!vendor && email) {
         vendor = await DynamoVendor.createVendor({ email, name: user.displayName || email.split('@')[0], status: 'pending', hasFilledForm: false });
         console.log("Created vendor record for:", email);
+        // Seed default RBAC roles for the new vendor org
+        try {
+          await seedRolesForOrg(vendor.vendorId || vendor.id, 'vendor');
+          console.log('Seeded default RBAC roles for vendor:', vendor.vendorId || vendor.id);
+        } catch (seedErr) {
+          console.warn('Failed to seed RBAC roles for vendor (non-blocking):', seedErr?.message);
+        }
       }
       nextRoute = "/Form1";
     }
@@ -317,12 +338,22 @@ router.post("/set-role", async (req, res) => {
           const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, { params: { email: userEmail } });
           const exists = Boolean(statusRes?.data?.exists);
           if (!exists) {
-            await axios.post(`${clientBackendBase}/client-api/clients`, {
+            const provisionRes = await axios.post(`${clientBackendBase}/client-api/clients`, {
               email: userEmail,
               companyName: null,
               contactName: user?.displayName || (userEmail.split('@')[0]),
             });
             console.log('Provisioned client profile for', userEmail);
+            // Seed default RBAC roles for the new client org
+            const newClientId = provisionRes?.data?.data?.clientId;
+            if (newClientId) {
+              try {
+                await seedRolesForOrg(newClientId, 'client');
+                console.log('Seeded default RBAC roles for client:', newClientId);
+              } catch (seedErr) {
+                console.warn('Failed to seed RBAC roles for client (non-blocking):', seedErr?.message);
+              }
+            }
           }
         }
       } catch (provisionErr) {
@@ -376,14 +407,58 @@ router.get("/verify", async (req, res) => {
 
     if (!userRecord) {
       try {
+        // Before creating a new users record with roleSelected=false, check if
+        // this email belongs to a team member (their users record is created during
+        // invite acceptance with roleSelected=true). A race condition could mean
+        // the record hasn't committed yet, so we also check rbac_members as a safety net.
+        let isMember = false;
+        let memberOrgType = null;
+        if (!vendorRecord) {
+          try {
+            const { DynamoDBDocumentClient: DocClient, QueryCommand: QCmd } = await import('@aws-sdk/lib-dynamodb');
+            const { DynamoDBClient: DDBClient } = await import('@aws-sdk/client-dynamodb');
+            const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+            const _doc = DocClient.from(_ddb);
+            const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
+
+            const memberResult = await _doc.send(new QCmd({
+              TableName: MEMBERS_TABLE,
+              IndexName: 'EmailIndex',
+              KeyConditionExpression: 'email = :email',
+              ExpressionAttributeValues: { ':email': normalizedEmail },
+              ProjectionExpression: 'orgId, #s',
+              ExpressionAttributeNames: { '#s': 'status' },
+              Limit: 1,
+            }));
+            const activeMember = memberResult.Items?.find(m => m.status === 'active');
+            if (activeMember) {
+              isMember = true;
+              // Determine orgType from rbac_organizations
+              try {
+                const { GetCommand: GCmd } = await import('@aws-sdk/lib-dynamodb');
+                const ORGS_TABLE = process.env.RBAC_ORGANIZATIONS_TABLE || 'rbac_organizations';
+                const orgResult = await _doc.send(new GCmd({
+                  TableName: ORGS_TABLE,
+                  Key: { orgId: activeMember.orgId },
+                  ProjectionExpression: 'orgType',
+                }));
+                memberOrgType = orgResult.Item?.orgType || 'vendor';
+              } catch { memberOrgType = 'vendor'; }
+            }
+          } catch (e) {
+            console.warn('[verify] rbac_members check failed:', e?.message);
+          }
+        }
+
         userRecord = await DynamoUser.createUser({
           email: normalizedEmail,
           displayName: displayNameFallback || normalizedEmail.split('@')[0],
-          lastSelectedRole: vendorRecord ? 'vendor' : null,
-          lastSelectedRoleUpdatedAt: vendorRecord ? new Date().toISOString() : null,
-          status: 'pending',
-          hasFilledForm: false,
-          roleSelected: vendorRecord ? true : false
+          lastSelectedRole: vendorRecord ? 'vendor' : (isMember ? memberOrgType : null),
+          lastSelectedRoleUpdatedAt: (vendorRecord || isMember) ? new Date().toISOString() : null,
+          status: isMember ? 'active' : 'pending',
+          hasFilledForm: isMember ? true : false,
+          roleSelected: vendorRecord ? true : isMember,
+          ...(isMember && { isTeamMember: true }),
         });
       } catch (e) {
         console.warn('[verify] DynamoUser.createUser failed:', e?.message);
@@ -414,15 +489,103 @@ router.get("/verify", async (req, res) => {
       }
     }
 
+    // If the user is a team member (isTeamMember flag set during invite acceptance)
+    // ensure roleSelected is always true to prevent role-selection redirect.
+    // Also detect team members whose users record was created before the isTeamMember
+    // flag existed — look them up in rbac_members as a fallback.
+    if (!vendorRecord && userRecord && userRecord.roleSelected !== true) {
+      let isKnownTeamMember = userRecord.isTeamMember === true;
+
+      // If the record doesn't have isTeamMember, check rbac_members directly
+      if (!isKnownTeamMember) {
+        try {
+          const { DynamoDBDocumentClient: DocClient, QueryCommand: QCmd } = await import('@aws-sdk/lib-dynamodb');
+          const { DynamoDBClient: DDBClient } = await import('@aws-sdk/client-dynamodb');
+          const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _doc = DocClient.from(_ddb);
+          const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
+
+          const memberCheck = await _doc.send(new QCmd({
+            TableName: MEMBERS_TABLE,
+            IndexName: 'EmailIndex',
+            KeyConditionExpression: 'email = :email',
+            ExpressionAttributeValues: { ':email': normalizedEmail },
+            ProjectionExpression: 'orgId, #s, orgType',
+            ExpressionAttributeNames: { '#s': 'status' },
+            Limit: 5,
+          }));
+          const activeMember = (memberCheck.Items || []).find(m => m.status === 'active');
+          if (activeMember) {
+            isKnownTeamMember = true;
+            // Determine orgType for lastSelectedRole
+            if (!userRecord.lastSelectedRole && activeMember.orgType) {
+              userRecord.lastSelectedRole = activeMember.orgType;
+            }
+          }
+        } catch (e) {
+          console.warn('[verify] rbac_members fallback check failed:', e?.message);
+        }
+      }
+
+      if (isKnownTeamMember) {
+        try {
+          const id = userRecord.userId || userRecord.id;
+          if (id) {
+            userRecord = await DynamoUser.updateUser(id, {
+              roleSelected: true,
+              isTeamMember: true,
+              ...(userRecord.lastSelectedRole ? {} : { lastSelectedRole: 'vendor', lastSelectedRoleUpdatedAt: new Date().toISOString() }),
+            });
+          }
+        } catch (e) {
+          console.warn('[verify] Failed to fix team member roleSelected:', e?.message);
+        }
+      }
+    }
+
     const lastSelectedRole = userRecord?.lastSelectedRole || null;
     const roleSelected = userRecord?.roleSelected === true;
     const role = (lastSelectedRole || roleFallback || 'vendor');
+    const isTeamMember = userRecord?.isTeamMember === true;
+
+    // Resolve platformAccess from rbac_members (for team members + org owners)
+    // Org owners who have been backfilled will have a member record with platformAccess.
+    // Non-team non-backfilled users default to all platforms.
+    let platformAccess = null;
+    try {
+      const { DynamoDBDocumentClient: DocClient2, QueryCommand: QCmd2 } = await import('@aws-sdk/lib-dynamodb');
+      const { DynamoDBClient: DDBClient2 } = await import('@aws-sdk/client-dynamodb');
+      const _ddb2 = new DDBClient2({ region: process.env.AWS_REGION || 'us-east-1' });
+      const _doc2 = DocClient2.from(_ddb2);
+      const MEMBERS_TABLE2 = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
+      const memberPAResult = await _doc2.send(new QCmd2({
+        TableName: MEMBERS_TABLE2,
+        IndexName: 'EmailIndex',
+        KeyConditionExpression: 'email = :email',
+        ExpressionAttributeValues: { ':email': normalizedEmail },
+        ProjectionExpression: 'platformAccess, #s',
+        ExpressionAttributeNames: { '#s': 'status' },
+        Limit: 5,
+      }));
+      const activeMemberPA = (memberPAResult.Items || []).find(m => m.status === 'active');
+      if (activeMemberPA && Array.isArray(activeMemberPA.platformAccess)) {
+        platformAccess = activeMemberPA.platformAccess;
+      }
+    } catch (e) {
+      console.warn('[verify] platformAccess lookup failed:', e?.message);
+    }
+    // Default: org owners without rbac_members record get all platforms
+    if (!platformAccess) {
+      platformAccess = ['vendor', 'client', 'sales'];
+    }
 
     return {
       email,
       role,
       lastSelectedRole,
       roleSelected,
+      isTeamMember,
+      platformAccess,
       source: 'users'
     };
   };

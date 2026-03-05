@@ -1,9 +1,14 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { getPem } from '../utils/jwksUtils.js';
 import { createSession, getTokenForSession } from '../utils/sessionStore.js';
 import * as DynamoUser from '../models/DynamoUser.js';
 import * as DynamoVendor from '../modules/vendor/models/DynamoVendor.js';
+import { docClient } from '../modules/rbac/config/db.js';
+import { TABLES } from '../modules/rbac/config/tables.js';
+import { derivePlatformAccess } from '../modules/rbac/config/modules.js';
+import { logSecurityEvent, SECURITY_ACTIONS } from '../modules/logging/services/securityLogger.js';
 
 const router = express.Router();
 
@@ -81,7 +86,7 @@ function getCookieValue(req, name) {
   return null;
 }
 
-function getAuthTokenFromRequest(req) {
+async function getAuthTokenFromRequest(req) {
   const authHeader = req.headers?.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring('Bearer '.length).trim();
@@ -93,11 +98,11 @@ function getAuthTokenFromRequest(req) {
   if (!cookieVal) return null;
   const looksLikeJwt = cookieVal.split('.').length === 3;
   if (looksLikeJwt) return cookieVal;
-  return getTokenForSession(cookieVal);
+  return await getTokenForSession(cookieVal);
 }
 
-function getAuthTokenFromRequestOrBody(req) {
-  const fromReq = getAuthTokenFromRequest(req);
+async function getAuthTokenFromRequestOrBody(req) {
+  const fromReq = await getAuthTokenFromRequest(req);
   if (fromReq) return fromReq;
 
   const bodyToken = req.body?.token || req.body?.authToken || null;
@@ -140,7 +145,7 @@ router.post('/session', async (req, res) => {
       if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
     }
 
-    const sid = createSession(token);
+    const sid = await createSession(token);
 
     res.setHeader('Cache-Control', 'no-store');
     res.cookie(cookieName, sid, {
@@ -149,10 +154,21 @@ router.post('/session', async (req, res) => {
       sameSite,
       domain: cookieDomain || undefined,
       path: '/',
+      maxAge: 8 * 60 * 60 * 1000, // 8 hours — matches sliding session TTL
     });
 
     // Mark that the last-used app/role for this user is vendor.
     await upsertUsersLastSelectedRole(decoded?.email, 'vendor');
+
+    // Log actual LOGIN_SUCCESS — this is the real "login" event
+    const vendorRecord = decoded?.email ? await DynamoVendor.getVendorByEmail(decoded.email).catch(() => null) : null;
+    logSecurityEvent({
+      orgId: vendorRecord?.vendorId || 'unknown',
+      action: SECURITY_ACTIONS.LOGIN_SUCCESS,
+      actorId: decoded?.sub || '',
+      actorEmail: decoded?.email || '',
+      metadata: { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent'), requestId: req.requestId },
+    });
 
     return res.json({ success: true });
   } catch (e) {
@@ -202,7 +218,7 @@ router.post('/logout', async (req, res) => {
 router.post('/handoff', async (req, res) => {
   try {
     cleanupExpired();
-    const token = getAuthTokenFromRequestOrBody(req);
+    const token = await getAuthTokenFromRequestOrBody(req);
     if (!token) return res.status(401).json({ error: 'Missing token' });
 
     const decoded = await verifyCognitoToken(token);
@@ -218,6 +234,64 @@ router.post('/handoff', async (req, res) => {
       vendorId = vendorRecord?.vendorId || vendorRecord?.id || null;
     } catch (e) {
       console.warn('[handoff] could not resolve vendorId:', e?.message);
+    }
+
+    // ── Platform access check ──
+    // If a targetPlatform is specified, verify the user has access to it
+    const targetPlatform = req.body?.targetPlatform;
+    const VALID_PLATFORMS = ['vendor', 'client', 'sales'];
+    if (targetPlatform && VALID_PLATFORMS.includes(targetPlatform)) {
+      const userId = decoded?.sub;
+      if (vendorId && userId) {
+        try {
+          // Fetch member's role, then role's permissions to derive platform access
+          const memberResult = await docClient.send(new GetCommand({
+            TableName: TABLES.MEMBERS,
+            Key: { orgId: vendorId, userId },
+            ProjectionExpression: 'roleId, permissionOverrides',
+          }));
+          const member = memberResult.Item;
+          const ALL_PLATFORMS = ['vendor', 'client', 'sales'];
+          // Super admins and org owners (no member record) get all platforms
+          const isSuperAdmin = member?.roleId === 'super_admin';
+          
+          let access = ALL_PLATFORMS; // default: allow
+          if (member && !isSuperAdmin) {
+            // Fetch role to get permissions
+            const roleResult = await docClient.send(new GetCommand({
+              TableName: TABLES.ROLES,
+              Key: { orgId: vendorId, roleId: member.roleId },
+              ProjectionExpression: '#perms',
+              ExpressionAttributeNames: { '#perms': 'permissions' },
+            }));
+            let rolePerms = Array.isArray(roleResult.Item?.permissions)
+              ? roleResult.Item.permissions
+              : roleResult.Item?.permissions instanceof Set
+                ? [...roleResult.Item.permissions]
+                : [];
+            // Apply overrides
+            const overrides = member.permissionOverrides;
+            if (overrides && !rolePerms.includes('*:*')) {
+              const permSet = new Set(rolePerms);
+              if (Array.isArray(overrides.added)) overrides.added.forEach(p => permSet.add(p));
+              if (Array.isArray(overrides.removed)) overrides.removed.forEach(p => permSet.delete(p));
+              rolePerms = [...permSet];
+            }
+            // Handoff originates from vendor backend; orgType is always 'vendor'
+            access = derivePlatformAccess(rolePerms, 'vendor');
+          }
+          if (!access.includes(targetPlatform)) {
+            console.warn(`[handoff] User ${userId} denied handoff to ${targetPlatform} — access: [${access}]`);
+            return res.status(403).json({
+              error: 'Platform access denied',
+              message: `You do not have access to the ${targetPlatform} platform.`,
+            });
+          }
+        } catch (rbacErr) {
+          // Phase 1 permissive: log but don't block if RBAC lookup fails
+          console.warn('[handoff] platformAccess check failed, allowing (Phase 1):', rbacErr?.message);
+        }
+      }
     }
 
     const code = randomCode();
@@ -369,7 +443,7 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
       if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
     }
 
-    const sid = createSession(entry.token);
+    const sid = await createSession(entry.token);
 
     // Mark that the last-used app/role for this user is vendor.
     try {
@@ -386,7 +460,24 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
       sameSite,
       domain: cookieDomain || undefined,
       path: '/',
+      maxAge: 8 * 60 * 60 * 1000, // 8 hours — matches sliding session TTL
     });
+
+    // Log LOGIN_SUCCESS for handoff vendor exchange
+    try {
+      const handoffDecoded = await verifyCognitoToken(entry.token);
+      const vendorRecord = handoffDecoded?.email ? await DynamoVendor.getVendorByEmail(handoffDecoded.email).catch(() => null) : null;
+      logSecurityEvent({
+        orgId: vendorRecord?.vendorId || 'unknown',
+        action: SECURITY_ACTIONS.LOGIN_SUCCESS,
+        actorId: handoffDecoded?.sub || '',
+        actorEmail: handoffDecoded?.email || '',
+        details: { method: 'handoff-vendor-exchange' },
+        metadata: { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent'), requestId: req.requestId },
+      });
+    } catch (logErr) {
+      console.warn('[handoff/vendor-exchange] failed to log LOGIN_SUCCESS:', logErr?.message);
+    }
 
     return res.json({ success: true });
   } catch (e) {

@@ -164,7 +164,7 @@ export async function acceptInvitation(req, res) {
       return res.status(400).json({ error: 'This invitation has expired' });
     }
 
-    const { email, orgId, orgType, roleId, roleName, inviteId, permissionOverrides } = invitation;
+    const { email, orgId, orgType, roleId, roleName, inviteId, permissionOverrides, platformAccess } = invitation;
 
     // ── Step 1: Create Cognito user ──
     let cognitoSub = null;
@@ -195,10 +195,19 @@ export async function acceptInvitation(req, res) {
 
       console.log(`[RBAC] Cognito user created for ${email} (sub: ${cognitoSub})`);
     } catch (cognitoError) {
-      // If user already exists, try to just set the password
+      // If user already exists, retrieve their Cognito sub and set the password
       if (cognitoError.name === 'UsernameExistsException') {
-        console.log(`[RBAC] Cognito user ${email} already exists — setting password`);
+        console.log(`[RBAC] Cognito user ${email} already exists — fetching sub and setting password`);
         try {
+          // Fetch the existing user's sub so the member record uses the real Cognito sub
+          const { AdminGetUserCommand } = await import('@aws-sdk/client-cognito-identity-provider');
+          const existingCognitoUser = await cognitoClient.send(new AdminGetUserCommand({
+            UserPoolId: process.env.COGNITO_USER_POOL_ID,
+            Username: email,
+          }));
+          cognitoSub = existingCognitoUser.UserAttributes?.find(a => a.Name === 'sub')?.Value;
+          console.log(`[RBAC] Retrieved existing Cognito sub for ${email}: ${cognitoSub}`);
+
           await cognitoClient.send(new AdminSetUserPasswordCommand({
             UserPoolId: process.env.COGNITO_USER_POOL_ID,
             Username: email,
@@ -239,8 +248,10 @@ export async function acceptInvitation(req, res) {
       displayName: displayName.trim(),
       roleId,
       roleName,
+      orgType: orgType || 'vendor',
       status: 'active',
       inviteId,
+      platformAccess: platformAccess || [orgType || 'vendor'],
       ...(permissionOverrides && { permissionOverrides }),
       joinedAt: now,
       updatedAt: now,
@@ -251,10 +262,12 @@ export async function acceptInvitation(req, res) {
       Item: memberRecord,
     }));
 
-    // ── Step 3: Create entity record in platform-specific table ──
-    // For vendors → vendors table, for clients → clients table
-    // This ensures the user shows up in the platform's user lookup
-    await createPlatformRecord(orgId, orgType, email, displayName.trim(), userId);
+    // ── Step 3: Create record in the global `users` table ──
+    // Team members do NOT get their own vendor/client records.
+    // They share the org's vendorId/clientId and are identified by their
+    // rbac_members record (orgId + userId).  The users table record ensures
+    // /api/auth/verify recognises them and skips role-selection & onboarding.
+    await createUsersTableRecord(orgId, orgType, email, displayName.trim(), userId);
 
     // ── Step 4: Mark invitation as accepted ──
     await docClient.send(new UpdateCommand({
@@ -275,7 +288,7 @@ export async function acceptInvitation(req, res) {
       email,
       roleId,
       displayName: displayName.trim(),
-    });
+    }, email);
 
     console.log(`[RBAC] Invitation accepted — ${email} joined ${orgId} as ${roleName}`);
 
@@ -296,100 +309,103 @@ export async function acceptInvitation(req, res) {
 // ──────────────────────────────────────
 
 /**
- * Create a record in the platform-specific table (vendors / clients).
- * This ensures auth middleware lookups (EmailIndex) resolve the user.
+ * Create a record in the global `users` table for the team member.
  *
- * - For vendor orgs: checks if vendor record exists; if not, creates a minimal one
- * - For client orgs: checks if client record exists; if not, creates a minimal one
+ * This ensures:
+ * 1. /api/auth/verify returns roleSelected: true → skip role-selection screen
+ * 2. lastSelectedRole is set → correct platform routing
+ * 3. isTeamMember + parentOrgId are stored → middleware can identify team members
  *
- * NOTE: This does NOT replace onboarding. The user still needs to fill out
- * vendor/client forms. It just ensures auth pipeline resolves their identity.
+ * Team members do NOT get their own vendor/client table records.
+ * They share the org's vendorId/clientId and are identified via their
+ * rbac_members record (orgId = vendorId/clientId, userId = Cognito sub).
  */
-async function createPlatformRecord(orgId, orgType, email, displayName, userId) {
+async function createUsersTableRecord(orgId, orgType, email, displayName, userId) {
   try {
-    if (orgType === 'vendor') {
-      // Check if a vendor record with this email already exists
-      const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
-      const scanResult = await docClient.send(new ScanCommand({
-        TableName: EXISTING_TABLES.VENDORS,
-        FilterExpression: 'email = :email',
-        ExpressionAttributeValues: { ':email': email },
-        Limit: 1,
-        ProjectionExpression: 'vendorId',
-      }));
+    const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+    const { v4: uuidv4 } = await import('uuid');
+    const USERS_TABLE = EXISTING_TABLES.USERS;
+    const now = new Date().toISOString();
 
-      if (!scanResult.Items?.length) {
-        // Create minimal vendor record so auth pipeline can resolve vendorId
-        await docClient.send(new PutCommand({
-          TableName: EXISTING_TABLES.VENDORS,
-          Item: {
-            vendorId: orgId, // Use the org's vendorId — the member belongs to this vendor org
-            email,
-            name: displayName,
-            status: 'active',
-            hasFilledForm: false,
-            isTeamMember: true, // Flag to distinguish from org-owner vendors
-            parentOrgId: orgId,
-            createdAt: new Date().toISOString(),
-          },
-          // Only create if no record with this email exists (race condition guard)
-          ConditionExpression: 'attribute_not_exists(vendorId)',
-        }));
-        console.log(`[RBAC] Created vendor (team member) record for ${email}`);
-      }
-    } else if (orgType === 'client') {
-      // Check via EmailIndex GSI
-      const { QueryCommand: QCmd } = await import('@aws-sdk/lib-dynamodb');
-      const clientResult = await docClient.send(new QCmd({
-        TableName: EXISTING_TABLES.CLIENTS,
-        IndexName: 'EmailIndex',
-        KeyConditionExpression: 'email = :email',
-        ExpressionAttributeValues: { ':email': email },
-        Limit: 1,
-        ProjectionExpression: 'clientId',
-      }));
+    // Check if a users table record already exists for this email.
+    // Full Scan (no Limit) so we reliably find the record regardless of table size.
+    const existingResult = await docClient.send(new ScanCommand({
+      TableName: USERS_TABLE,
+      FilterExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': email.toLowerCase().trim() },
+      ProjectionExpression: 'userId, id, roleSelected, isTeamMember',
+    }));
 
-      if (!clientResult.Items?.length) {
-        const { randomUUID } = await import('crypto');
-        await docClient.send(new PutCommand({
-          TableName: EXISTING_TABLES.CLIENTS,
-          Item: {
-            clientId: randomUUID(),
-            email,
-            contactName: displayName,
-            verificationStatus: 'approved', // Team members are pre-approved
-            hasOnboarded: false,
-            isTeamMember: true,
-            parentOrgId: orgId,
-            details: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
+    const existingUser = existingResult.Items?.[0];
+
+    if (existingUser) {
+      // User record exists — update it to mark as team member with correct role.
+      // Table PK is 'id' (not 'userId').
+      const existingId = existingUser.id || existingUser.userId;
+      if (existingId) {
+        await docClient.send(new UpdateCommand({
+          TableName: USERS_TABLE,
+          Key: { id: existingId },
+          UpdateExpression: 'SET #rs = :rs, lastSelectedRole = :lsr, lastSelectedRoleUpdatedAt = :now, isTeamMember = :tm, parentOrgId = :org, updatedAt = :now',
+          ExpressionAttributeNames: { '#rs': 'roleSelected' },
+          ExpressionAttributeValues: {
+            ':rs': true,
+            ':lsr': orgType,
+            ':now': now,
+            ':tm': true,
+            ':org': orgId,
           },
         }));
-        console.log(`[RBAC] Created client (team member) record for ${email}`);
+        console.log(`[RBAC] Updated existing users record for team member ${email}`);
       }
+    } else {
+      // Create new users table record
+      const newUserId = uuidv4();
+      await docClient.send(new PutCommand({
+        TableName: USERS_TABLE,
+        Item: {
+          userId: newUserId,
+          id: newUserId,
+          email: email.toLowerCase().trim(),
+          displayName: displayName || email.split('@')[0],
+          lastSelectedRole: orgType,
+          lastSelectedRoleUpdatedAt: now,
+          status: 'active',
+          hasFilledForm: true,
+          roleSelected: true,
+          isTeamMember: true,
+          parentOrgId: orgId,
+          hasPasskey: false,
+          passkeyRegisteredAt: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }));
+      console.log(`[RBAC] Created users table record for team member ${email}`);
     }
   } catch (error) {
-    // Log but don't fail the invitation — platform record can be created later
-    console.warn(`[RBAC] createPlatformRecord warning for ${email}:`, error.message);
+    // Log but don't fail the invitation — users record can be patched later
+    console.warn(`[RBAC] createUsersTableRecord warning for ${email}:`, error.message);
   }
 }
 
 /**
  * Log an audit event. Fire-and-forget.
  */
-async function logAudit(orgId, userId, action, details = {}) {
+async function logAudit(orgId, userId, action, details = {}, actorEmail = null) {
   try {
+    const item = {
+      orgId,
+      eventId: `${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
+      userId,
+      action,
+      details,
+      timestamp: new Date().toISOString(),
+    };
+    if (actorEmail) item.actorEmail = actorEmail;
     await docClient.send(new PutCommand({
       TableName: TABLES.AUDIT_LOG,
-      Item: {
-        orgId,
-        eventId: `${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
-        userId,
-        action,
-        details,
-        timestamp: new Date().toISOString(),
-      },
+      Item: item,
     }));
   } catch (error) {
     console.error('[RBAC] Audit log error:', error?.message);

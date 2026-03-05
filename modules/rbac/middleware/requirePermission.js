@@ -7,6 +7,12 @@
 // ============================================================
 
 import { hasPermission } from '../utils/permission.utils.js';
+import { logSecurityEvent, SECURITY_ACTIONS } from '../../logging/services/securityLogger.js';
+
+/** Helper to build metadata for security logs */
+function buildMeta(req) {
+  return { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent'), requestId: req.requestId };
+}
 
 /**
  * Creates a middleware that checks for a specific module:action permission.
@@ -21,9 +27,10 @@ import { hasPermission } from '../utils/permission.utils.js';
  *   3. 'module:action' → allow (exact match)
  *   4. Otherwise → 403
  *
- * Phase 1 behavior (PERMISSIVE MODE):
- *   If req.rbac is missing (middleware not attached), logs a warning and allows.
- *   This will be tightened in Phase 4.
+ * Phase 4 behavior (ENFORCEMENT MODE):
+ *   If req.rbac is missing:
+ *     - Org owner (_fallback: true) → allow (they own the org)
+ *     - No RBAC context at all → block with 403
  *
  * @param {string} module - Module code (e.g., 'products', 'orders')
  * @param {string} action - Action verb (e.g., 'view', 'create', 'edit', 'delete')
@@ -31,9 +38,18 @@ import { hasPermission } from '../utils/permission.utils.js';
  */
 export function requirePermission(module, action) {
   return (req, res, next) => {
-    // Phase 1 permissive: if RBAC context not loaded, allow with warning
+    // No RBAC context — check if this is an org owner (fallback Super Admin)
     if (!req.rbac) {
-      console.warn(`[RBAC] requirePermission(${module}:${action}) — no RBAC context. Allowing (Phase 1 permissive mode).`);
+      return res.status(403).json({
+        error: 'Forbidden',
+        code: 'RBAC_003',
+        message: 'Access denied — no RBAC context.',
+        required: `${module}:${action}`,
+      });
+    }
+
+    // Org owner fallback — allow (they are implicit Super Admin)
+    if (req.rbac._fallback && req.rbac.isSuperAdmin) {
       return next();
     }
 
@@ -42,11 +58,19 @@ export function requirePermission(module, action) {
       return next();
     }
 
-    // Permission denied
-    console.warn(
-      `[RBAC] Permission denied: user=${req.rbac.userId} role=${req.rbac.roleName} ` +
-      `required=${module}:${action} org=${req.rbac.orgId}`
-    );
+    // Permission denied — log to security_log table (fire-and-forget)
+    logSecurityEvent({
+      orgId: req.rbac.orgId,
+      action: SECURITY_ACTIONS.PERMISSION_DENIED,
+      actorId: req.rbac.userId,
+      actorEmail: req.auth?.email || '',
+      details: {
+        attemptedRoute: `${req.method} ${req.originalUrl}`,
+        requiredPermission: `${module}:${action}`,
+        roleName: req.rbac.roleName,
+      },
+      metadata: buildMeta(req),
+    });
 
     return res.status(403).json({
       error: 'Forbidden',
@@ -66,7 +90,15 @@ export function requirePermission(module, action) {
 export function requireSuperAdmin() {
   return (req, res, next) => {
     if (!req.rbac) {
-      console.warn('[RBAC] requireSuperAdmin — no RBAC context. Allowing (Phase 1 permissive mode).');
+      return res.status(403).json({
+        error: 'Forbidden',
+        code: 'RBAC_003',
+        message: 'Access denied — no RBAC context.',
+      });
+    }
+
+    // Org owner fallback — always Super Admin
+    if (req.rbac._fallback && req.rbac.isSuperAdmin) {
       return next();
     }
 

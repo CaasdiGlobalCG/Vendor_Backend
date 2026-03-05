@@ -84,20 +84,22 @@ function getMaxCustomRoles(plan, orgType) {
 }
 
 /** Fire-and-forget audit log entry. */
-function logAudit(orgId, userId, action, details) {
+function logAudit(orgId, userId, action, details, actorEmail = null) {
   const now = new Date().toISOString();
+  const item = {
+    orgId,
+    eventId: `${now}#${randomUUID()}`,
+    userId,
+    action,
+    module: 'user_management',
+    details,
+    timestamp: now,
+    ttl: Math.floor(Date.now() / 1000) + 365 * 86400,
+  };
+  if (actorEmail) item.actorEmail = actorEmail;
   docClient.send(new PutCommand({
     TableName: TABLES.AUDIT_LOG,
-    Item: {
-      orgId,
-      eventId: `${now}#${randomUUID()}`,
-      userId,
-      action,
-      module: 'user_management',
-      details,
-      timestamp: now,
-      ttl: Math.floor(Date.now() / 1000) + 365 * 86400,
-    },
+    Item: item,
   })).catch((e) => console.error('[RBAC] audit log error:', e.message));
 }
 
@@ -312,7 +314,7 @@ export async function createRole(req, res) {
     logAudit(orgId, userId, 'role.created', {
       roleId, roleName: roleName.trim(), roleLevel,
       permissionCount: valid.length, copiedFrom: copyFrom || null,
-    });
+    }, req.auth?.email);
 
     return res.status(201).json({ role: roleItem });
   } catch (error) {
@@ -424,7 +426,7 @@ export async function updateRole(req, res) {
       roleId,
       fieldsChanged: Object.keys(req.body),
       newPermissionCount: permissions?.length ?? null,
-    });
+    }, req.auth?.email);
 
     return res.status(200).json({ message: 'Role updated successfully', roleId });
   } catch (error) {
@@ -486,7 +488,7 @@ export async function deleteRole(req, res) {
 
     logAudit(orgId, userId, 'role.deleted', {
       roleId, roleName: existingRole.roleName,
-    });
+    }, req.auth?.email);
 
     return res.status(200).json({ message: 'Role deleted successfully', roleId });
   } catch (error) {

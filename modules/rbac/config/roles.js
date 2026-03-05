@@ -62,7 +62,7 @@ export const VENDOR_DEFAULT_ROLES = [
       'purchase_orders:manage',
       'notifications:manage',
       'settings:view', 'settings:edit',
-      'user_management:view', 'user_management:create', 'user_management:edit',
+      'user_management:manage',
       'activity_log:view', 'activity_log:export',
     ],
   },
@@ -86,7 +86,7 @@ export const VENDOR_DEFAULT_ROLES = [
       'purchase_orders:manage',
       'notifications:manage',
       // Team management within sales
-      'user_management:view', 'user_management:create', 'user_management:edit',
+      'user_management:manage',
       // Settings — view only
       'settings:view',
       'activity_log:view', 'activity_log:export',

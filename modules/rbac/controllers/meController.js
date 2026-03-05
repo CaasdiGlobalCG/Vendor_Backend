@@ -63,6 +63,8 @@ export async function getMyRBAC(req, res) {
       accessibleModules,
       allModules: moduleKeys,
       roleLevels: ROLE_LEVELS,
+      // platformAccess: which platforms this user can switch to
+      platformAccess: rbac.platformAccess || [rbac.orgType],
       // Phase 1 flag — tells frontend this is a fallback grant
       _fallback: rbac._fallback || false,
     });

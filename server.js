@@ -45,6 +45,10 @@ import { initializeSubscriptionScheduler } from './modules/workspace/services/su
 // Import DynamoDB contact model
 import { createContact } from './models/DynamoContact.js';
 
+// Import logging middleware (Category 3 & 4 — security + system logs)
+import { requestLogger } from './modules/logging/middleware/requestLogger.js';
+import { errorLogger } from './modules/logging/middleware/errorLogger.js';
+
 dotenv.config();
 
 const app = express();
@@ -95,6 +99,10 @@ app.use(cors({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Request logger: assigns req.requestId + structured JSON console output
+// Must be BEFORE all routes so every request gets a requestId
+app.use(requestLogger);
 
 // Session config
 app.use(
@@ -206,9 +214,11 @@ async function loadModules() {
     // Load RBAC Module (Phase 1 — permissive mode)
     console.log('🔄 Loading RBAC Module...');
     const rbacModule = await import('./modules/rbac/index.js');
-    app.use('/api/rbac', rbacModule.rbacRoutes);
-    // Public invite routes — no auth required (invitee has no account yet)
+    // Public invite routes FIRST — no auth required (invitee has no account yet).
+    // Must be mounted before /api/rbac so the auth middleware on rbacRoutes
+    // doesn't intercept /api/rbac/invite/* requests with a 401.
     app.use('/api/rbac/invite', rbacModule.invitePublicRoutes);
+    app.use('/api/rbac', rbacModule.rbacRoutes);
     console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
 
     console.log('🎉 All modules loaded successfully');
@@ -238,11 +248,8 @@ app.use('/api/turnkey-workflows', turnkeyWorkflowRoutes); // Turnkey Workflow Ma
 app.use('/api/element-deletion-history', elementDeletionHistoryRoutes); // Element deletion history routes
 app.use('/api', sendProgressEmailRoutes); // Register sendProgressEmail route
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Something broke!');
-});
+// Structured error logger — replaces basic console.error(err.stack)
+app.use(errorLogger);
 
 // Initialize WebSocket server
 const wss = initWebSocketServer(server);

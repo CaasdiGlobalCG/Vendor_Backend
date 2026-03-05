@@ -36,8 +36,26 @@ modules/rbac/
 ```
 authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 ```
-- `attachVendorId` (at `middleware/attachVendorId.js`): Queries `vendors.EmailIndex` GSI → sets `req.vendorId`
+- `attachVendorId` (at `middleware/attachVendorId.js`):
+  1. Primary: Queries `vendors.EmailIndex` GSI → sets `req.vendorId`
+  2. Fallback (team members): Queries `rbac_members.UserOrgsIndex` by Cognito sub → finds active vendor membership → sets `req.vendorId = orgId`, `req.isTeamMember = true`
+  3. Note: vendorId hint validation may log "does not match authenticated email" for team members — this is expected and harmless.
 - `attachRBAC`: Reads `req.vendorId` (sync `resolveOrg()`) → GetItem `rbac_members` → GetItem `rbac_roles` → sets `req.rbac`
+
+### attachRBAC Known Gotchas (all fixed, documented for future reference)
+1. **Reserved keyword `permissions`**: Must alias as `#perms` in `ProjectionExpression` for `rbac_roles` GetItem. Without alias → `ValidationException` → catch block → Super Admin Error Fallback.
+2. **Credential provider in db.js**: Must use default provider chain (`new DynamoDBClient({ region })`), NOT explicit `credentials: { accessKeyId, secretAccessKey }`. Explicit credentials freeze at ESM module-load time → `undefined` if module loaded before `dotenv.config()`.
+3. **Permissions type safety**: `role.permissions` could be a DynamoDB Set (SS) instead of List (L). Code defensively handles both Array and Set.
+4. **Phase 1 permissive mode**: If no membership found OR any error occurs, grants Super Admin fallback with `_fallback: true`. Will be tightened in Phase 4.
+
+## Team Member Login Flow
+- Team members share the org's vendorId/clientId — no separate vendor/client record.
+- `inviteAcceptController.js` creates only a `users` table record (with `isTeamMember: true`, `parentOrgId`) — NOT a vendor/client record.
+- `/api/auth/verify` detects team members via `rbac_members.EmailIndex` fallback, returns `isTeamMember: true`.
+- `/api/vendor/me` resolves team members via `rbac_members.UserOrgsIndex`, returns org owner's vendor data with `isTeamMember: true`.
+- **Lookup order in /me is critical**: vendors → team member (rbac_members) → google_users → 404. Team member check MUST run before google_users to avoid stale data.
+- Frontend `routeVendor()` navigates team members directly to `/VendorDashboard`; `VendorGuard` skips onboarding checks.
+- For full details, see `Documents/RBAC/Team_Member_Login_Flow.md`.
 
 ## API Routes
 | Method | Path | Description | Permission |
@@ -50,6 +68,23 @@ authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 | GET | `/api/rbac/roles` | List roles + canAssign | user_management:view |
 | GET | `/api/rbac/invitations` | List invitations | user_management:view |
 | DELETE | `/api/rbac/invitations/:inviteId` | Cancel invitation | user_management:edit |
+
+## Extended Enforcement Coverage (Phase 5)
+RBAC now protects vendor lead operations in `modules/vendor/routes/vendorLeadRoutes.js` via:
+`authenticateCognitoJwt → attachVendorId → attachRBAC → requirePermission`.
+
+| Method | Path | Permission |
+|--------|------|------------|
+| POST | `/api/vendor-leads` | leads:view |
+| POST | `/api/vendor-leads/stats` | leads:view |
+| GET | `/api/vendor-leads/:leadId` | leads:view |
+| POST | `/api/vendor-leads/:leadId/respond` | leads:edit |
+| PUT | `/api/vendor-leads/:leadId/response` | leads:edit |
+| POST | `/api/vendor-leads/:leadId/boq-download` | leads:view |
+| POST | `/api/vendor-leads/:leadId/quotation` | leads:edit |
+| PUT | `/api/vendor-leads/:leadId/quotation` | leads:edit |
+| POST | `/api/vendor-leads/:leadId/vendor-boq` | leads:edit |
+| POST | `/api/vendor-leads/:leadId/vendor-quotation` | leads:edit |
 
 ## req.rbac Shape
 ```js
@@ -96,5 +131,10 @@ node modules/rbac/scripts/backfillSuperAdmins.js # Migrate existing accounts
 ## Phase Roadmap
 - **Phase 1** (done): Permissive mode, backfill, GET /me
 - **Phase 2** (done): Team member CRUD, invitations, role management
-- **Phase 3**: Audit logging, custom roles
+- **Phase 2.5A** (done): Role CRUD API + Frontend role editor
+- **Phase 2.5B** (done): Frontend team management UI (TeamPage.jsx)
+- **Phase 2.5B+** (done): SES email, env variables, UI enhancements
+- **Phase 2.5C** (done): Email invitation + acceptance flow (InviteAcceptPage)
+- **Team Member Login Flow** (done): Shared-org model, middleware fallbacks, frontend routing
+- **Phase 3**: Audit logging, custom roles (planned)
 - **Phase 4**: Full enforcement (remove permissive fallbacks)

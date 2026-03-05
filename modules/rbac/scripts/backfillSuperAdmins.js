@@ -118,6 +118,7 @@ async function createOrgRBAC({ orgId, orgType, orgName, userId, email }) {
   await seedRolesForOrg(orgId, orgType);
 
   // 3. Create member record — owner as Super Admin
+  // Org owners get full platform access by default
   await docClient.send(new PutCommand({
     TableName: TABLES.MEMBERS,
     Item: {
@@ -128,6 +129,7 @@ async function createOrgRBAC({ orgId, orgType, orgName, userId, email }) {
       roleId: 'super_admin',
       roleName: 'Super Admin',
       status: 'active',
+      platformAccess: ['vendor', 'client', 'sales'],
       invitedBy: 'system',
       joinedAt: now,
       lastActiveAt: now,

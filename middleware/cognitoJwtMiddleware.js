@@ -1,6 +1,12 @@
 import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
 import { getTokenForSession } from '../utils/sessionStore.js';
+import { logSecurityEvent, SECURITY_ACTIONS } from '../modules/logging/services/securityLogger.js';
+
+/** Helper to build metadata object for security logs */
+function buildMeta(req) {
+  return { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent'), requestId: req.requestId };
+}
 
 function getCookieValue(req, name) {
   const cookieHeader = req.headers?.cookie;
@@ -17,14 +23,14 @@ function getCookieValue(req, name) {
   return null;
 }
 
-function getAuthTokenFromRequest(req) {
+async function getAuthTokenFromRequest(req) {
   const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
   const cookieVal = getCookieValue(req, cookieName);
   if (cookieVal) {
     const looksLikeJwt = cookieVal.split('.').length === 3;
     if (looksLikeJwt) return cookieVal;
 
-    const tokenFromSession = getTokenForSession(cookieVal);
+    const tokenFromSession = await getTokenForSession(cookieVal);
     if (tokenFromSession) return tokenFromSession;
   }
 
@@ -47,7 +53,7 @@ export async function authenticateCognitoJwt(req, res, next) {
       return next();
     }
 
-    const token = getAuthTokenFromRequest(req);
+    const token = await getAuthTokenFromRequest(req);
     if (!token) {
       return res.status(401).json({ success: false, message: 'Missing token' });
     }
@@ -80,9 +86,24 @@ export async function authenticateCognitoJwt(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token missing email' });
     }
 
+    // NOTE: LOGIN_SUCCESS is logged in handoffRoutes.js / dynamoAuthRoutes.js
+    // where the actual session is established — NOT here, because this middleware
+    // runs on EVERY authenticated request and would create excessive log spam.
+
     return next();
   } catch (err) {
     console.error('[authenticateCognitoJwt] error:', err?.message || err);
+
+    // Log authentication failure
+    const isExpired = err?.message?.includes('expired');
+    logSecurityEvent({
+      orgId: 'unknown',
+      action: isExpired ? SECURITY_ACTIONS.TOKEN_EXPIRED : SECURITY_ACTIONS.TOKEN_INVALID,
+      actorEmail: 'unknown',
+      details: { reason: err?.message || 'Authentication failed' },
+      metadata: buildMeta(req),
+    });
+
     return res.status(401).json({ success: false, message: 'Not authenticated' });
   }
 }

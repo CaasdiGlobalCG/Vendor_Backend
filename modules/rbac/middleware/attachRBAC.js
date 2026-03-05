@@ -8,9 +8,10 @@
 //              requirePermission.js (consumes req.rbac downstream)
 // ============================================================
 
-import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
+import { derivePlatformAccess } from '../config/modules.js';
 
 /**
  * Determines which org ID field to use based on what's already on the request.
@@ -69,16 +70,43 @@ export async function attachRBAC(req, res, next) {
     const memberResult = await docClient.send(new GetCommand({
       TableName: TABLES.MEMBERS,
       Key: { orgId: org.orgId, userId },
-      ProjectionExpression: 'roleId, roleName, #s, email, permissionOverrides',
+      ProjectionExpression: 'roleId, roleName, #s, email, permissionOverrides, platformAccess',
       ExpressionAttributeNames: { '#s': 'status' },
     }));
 
     const member = memberResult.Item;
 
     // PERMISSIVE MODE: If no membership found, grant Super Admin fallback
-    // This keeps existing single-owner accounts working during migration
+    // AND auto-create the rbac_members record so email is resolvable in future
     if (!member) {
-      console.warn(`[RBAC] No membership found for user=${userId} org=${org.orgId}. Granting fallback Super Admin (Phase 1 permissive mode).`);
+      const email = req.auth?.email || req.user?.email || '';
+      const displayName = req.auth?.name || email;
+      console.warn(`[RBAC] No membership found for user=${userId} org=${org.orgId}. Auto-creating member record & granting Super Admin.`);
+
+      // Fire-and-forget: create the member record so future lookups find this user
+      const now = new Date().toISOString();
+      docClient.send(new PutCommand({
+        TableName: TABLES.MEMBERS,
+        Item: {
+          orgId: org.orgId,
+          userId,
+          email,
+          displayName,
+          roleId: 'super_admin',
+          roleName: 'Super Admin',
+          status: 'active',
+          platformAccess: ['vendor', 'client', 'sales'],
+          invitedBy: 'system_auto',
+          joinedAt: now,
+          lastActiveAt: now,
+        },
+        ConditionExpression: 'attribute_not_exists(userId)',
+      })).catch(err => {
+        if (err.name !== 'ConditionalCheckFailedException') {
+          console.error('[RBAC] Failed to auto-create member record:', err.message);
+        }
+      });
+
       req.rbac = {
         orgId: org.orgId,
         orgType: org.orgType,
@@ -89,7 +117,8 @@ export async function attachRBAC(req, res, next) {
         permissions: ['*:*'],
         permissionSet: new Set(['*:*']),
         isSuperAdmin: true,
-        _fallback: true, // Flag so we can track these in logs
+        platformAccess: ['vendor', 'client', 'sales'],
+        _fallback: true,
       };
       return next();
     }
@@ -113,10 +142,12 @@ export async function attachRBAC(req, res, next) {
     }
 
     // Step 2: Look up role to get permissions
+    // 'permissions' is a DynamoDB reserved keyword — must alias it
     const roleResult = await docClient.send(new GetCommand({
       TableName: TABLES.ROLES,
       Key: { orgId: org.orgId, roleId: member.roleId },
-      ProjectionExpression: 'roleName, roleLevel, permissions',
+      ProjectionExpression: 'roleName, roleLevel, #perms',
+      ExpressionAttributeNames: { '#perms': 'permissions' },
     }));
 
     const role = roleResult.Item;
@@ -132,7 +163,12 @@ export async function attachRBAC(req, res, next) {
 
     // Step 3: Attach RBAC context to request
     // Apply per-member permission overrides if they exist
-    let permissions = role.permissions || [];
+    // Defensive: handle permissions stored as DDB Set (SS) or List (L)
+    let permissions = Array.isArray(role.permissions)
+      ? role.permissions
+      : role.permissions instanceof Set
+        ? [...role.permissions]
+        : [];
     const overrides = member.permissionOverrides;
     if (overrides && !permissions.includes('*:*')) {
       const permSet = new Set(permissions);
@@ -140,6 +176,10 @@ export async function attachRBAC(req, res, next) {
       if (Array.isArray(overrides.removed)) overrides.removed.forEach(p => permSet.delete(p));
       permissions = [...permSet];
     }
+    // platformAccess: auto-derived from the user's resolved permissions + org type
+    // WHY: Scoped by orgType so vendor invites don't leak client access
+    const platformAccess = derivePlatformAccess(permissions, org.orgType);
+
     req.rbac = {
       orgId: org.orgId,
       orgType: org.orgType,
@@ -151,12 +191,13 @@ export async function attachRBAC(req, res, next) {
       permissionSet: new Set(permissions),
       isSuperAdmin: permissions.includes('*:*'),
       permissionOverrides: overrides || null,
+      platformAccess,
       _fallback: false,
     };
 
     return next();
   } catch (error) {
-    console.error('[RBAC] Error loading RBAC context:', error);
+    console.error('[RBAC] Error loading RBAC context:', error?.name, error?.message, error?.stack);
     // PERMISSIVE MODE: On error, don't block the request — log and continue
     // TODO(RBAC-P4): Change to 500 error when enforcement is live
     console.warn('[RBAC] Falling back to Super Admin due to error (Phase 1 permissive mode).');
@@ -175,6 +216,7 @@ export async function attachRBAC(req, res, next) {
       permissions: ['*:*'],
       permissionSet: new Set(['*:*']),
       isSuperAdmin: true,
+      platformAccess: ['vendor', 'client', 'sales'],
       _fallback: true,
     };
     return next();

@@ -137,7 +137,67 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
     console.log(`Fetching current vendor for email: ${email}`);
     let vendor = await DynamoVendor.getVendorByEmail(email);
 
-    // If no vendor, check for an existing Google user (fallback)
+    // ── Team member check (runs BEFORE google_users fallback) ──
+    // Team members don't have their own vendor record. They share the org's
+    // vendorId/clientId. Resolve via rbac_members using their Cognito sub.
+    // This MUST run before the google_users fallback so stale google_user
+    // records from earlier /set-role flows don't shadow team member data.
+    if (!vendor) {
+      const userId = req.auth?.sub;
+      if (userId) {
+        try {
+          const { DynamoDBDocumentClient, QueryCommand, GetCommand: GCmd } = await import('@aws-sdk/lib-dynamodb');
+          const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+          const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _doc = DynamoDBDocumentClient.from(_ddb);
+          const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
+          const VENDORS_TABLE_NAME = process.env.VENDORS_TABLE || 'vendors';
+
+          // Find the user's active membership
+          const memberResult = await _doc.send(new QueryCommand({
+            TableName: MEMBERS_TABLE,
+            IndexName: 'UserOrgsIndex',
+            KeyConditionExpression: 'userId = :uid',
+            ExpressionAttributeValues: { ':uid': userId },
+            ProjectionExpression: 'orgId, #s, displayName, roleName',
+            ExpressionAttributeNames: { '#s': 'status' },
+            Limit: 5,
+          }));
+
+          const activeMembership = memberResult.Items?.find(m => m.status === 'active');
+          if (activeMembership?.orgId) {
+            // Fetch the org owner's vendor record by orgId (= vendorId PK)
+            const orgVendorResult = await _doc.send(new GCmd({
+              TableName: VENDORS_TABLE_NAME,
+              Key: { vendorId: activeMembership.orgId },
+            }));
+
+            if (orgVendorResult.Item) {
+              const orgVendor = orgVendorResult.Item;
+              // Return org's vendor data but mark as team member
+              return res.status(200).json({
+                success: true,
+                data: {
+                  ...orgVendor,
+                  vendorId: orgVendor.vendorId,
+                  email: email, // Use the team member's own email
+                  name: activeMembership.displayName || email.split('@')[0],
+                  status: 'approved', // Team members are pre-approved
+                  hasFilledForm: true, // Skip onboarding forms
+                  isTeamMember: true,
+                  memberRole: activeMembership.roleName,
+                  parentOrgId: activeMembership.orgId,
+                },
+              });
+            }
+          }
+        } catch (memberErr) {
+          console.warn('[/me] Team member lookup failed:', memberErr?.message);
+        }
+      }
+    }
+
+    // If no vendor and not a team member, check for an existing Google user (fallback)
     if (!vendor) {
       const googleUser = await DynamoGoogleUser.getGoogleUserByEmail(email);
       if (googleUser) {
