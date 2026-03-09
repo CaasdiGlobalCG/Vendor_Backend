@@ -31,11 +31,8 @@ export const initWebSocketServer = (server) => {
                     console.log('✅ WebSocket connection upgraded successfully!');
                     wss.emit('connection', ws, request);
                 });
-            } else {
-                console.log('❌ WebSocket upgrade path not matched:', pathname);
-                socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-                socket.destroy();
             }
+            // Do NOT destroy unmatched sockets — other WS servers (canvas) may handle them
         } catch (error) {
             console.error('❌ Error during WebSocket upgrade:', error);
             socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');

@@ -127,4 +127,59 @@ router.put('/workspaces/:id/tasks/:taskId/subtasks/:subtaskId/canvas', dynamoWor
 // Delete a workspace
 router.delete('/workspaces/:id', dynamoWorkspaceController.deleteWorkspace);
 
+// ── Comment @mention notifications ──
+router.post('/workspace/comments/mention', async (req, res) => {
+  try {
+    const { workspaceId, nodeId, elementName, commentText, authorName, mentionedUserIds } = req.body;
+    if (!mentionedUserIds || mentionedUserIds.length === 0) {
+      return res.status(200).json({ success: true, message: 'No mentions to notify' });
+    }
+
+    // Dynamic import to avoid circular deps
+    const { sendNotificationToUser } = await import('../../../websocket/notificationSocket.js');
+    const { createNotification } = await import('../../../models/DynamoNotification.js');
+
+    const results = [];
+    for (const userId of mentionedUserIds) {
+      // Persist to DynamoDB
+      try {
+        await createNotification({
+          userId,
+          userType: 'vendor',
+          type: 'comment_mention',
+          title: `${authorName} mentioned you in a comment`,
+          message: commentText.length > 120 ? commentText.slice(0, 120) + '…' : commentText,
+          relatedId: workspaceId,
+          relatedType: 'workspace',
+        });
+      } catch (dbErr) {
+        console.error(`Failed to persist mention notification for ${userId}:`, dbErr);
+      }
+
+      // Real-time WS push
+      try {
+        sendNotificationToUser(userId, {
+          id: `mention_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          type: 'comment_mention',
+          title: `${authorName} mentioned you`,
+          message: commentText.length > 120 ? commentText.slice(0, 120) + '…' : commentText,
+          data: { workspaceId, nodeId, elementName },
+          timestamp: new Date().toISOString(),
+          priority: 'medium',
+          actionRequired: false,
+          actions: [{ type: 'navigate', label: 'View Comment', url: `/workspace/${workspaceId}` }],
+        });
+      } catch (wsErr) {
+        console.error(`Failed to send WS mention notification for ${userId}:`, wsErr);
+      }
+      results.push(userId);
+    }
+
+    res.status(200).json({ success: true, notified: results });
+  } catch (error) {
+    console.error('Error sending mention notifications:', error);
+    res.status(500).json({ success: false, message: 'Failed to send notifications' });
+  }
+});
+
 export default router;

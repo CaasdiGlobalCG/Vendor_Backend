@@ -42,7 +42,7 @@ import {
   clientRejectProjectComplete
 } from '../controllers/workspaceController.js';
 import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus } from '../controllers/workspaceInvoicesController.js';
-import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats } from '../controllers/workspaceCreditNotesController.js';
+import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats, updateCreditNoteRequestStatus } from '../controllers/workspaceCreditNotesController.js';
 import { getWorkspacePurchaseOrders, vendorApprovePurchaseOrder } from '../controllers/workspacePurchaseOrdersController.js';
 import { getWorkspaceSubscriptions, getSubscriptionStats, createSubscription, updateSubscription, deleteSubscription, pauseSubscription, resumeSubscription, getSubscriptionHistory, generateSubscriptionInvoice, bulkPauseSubscriptions, bulkResumeSubscriptions } from '../controllers/workspaceSubscriptionsController.js';
 import purchaseRequisitionsRouter from './purchaseRequisitionsRoutes.js';
@@ -338,6 +338,13 @@ router.get('/credit-notes/:creditNoteId', authenticateUser, getWorkspaceCreditNo
  * @access  Private
  */
 router.get('/credit-notes/stats', authenticateUser, getCreditNoteStats);
+
+/**
+ * @route   PATCH /api/workspace/credit-notes/:creditNoteId/status
+ * @desc    Vendor updates status of a credit note request (acknowledge/process/issue/reject)
+ * @access  Private (Vendor)
+ */
+router.patch('/credit-notes/:creditNoteId/status', authenticateUser, updateCreditNoteRequestStatus);
 
 /**
  * ========================================

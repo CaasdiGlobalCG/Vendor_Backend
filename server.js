@@ -35,9 +35,11 @@ import dashboardRoutes from './routes/dashboard.routes.js';
 import { getWorkspacePurchaseOrders } from './modules/workspace/controllers/workspacePurchaseOrdersController.js';
 import sendProgressEmailRoutes from './routes/sendProgressEmail.js'; // Import sendProgressEmail route
 import handoffRoutes from './routes/handoffRoutes.js'; // Import handoff routes for vendor-to-client switching
+import vendorTendersRoute from './routes/vendorTendersRoute.js'; // Proxy: fetch vendor tenders from Sales Backend
 
 // Import WebSocket initialization
 import { initWebSocketServer } from './websocket/notificationSocket.js';
+import { initCanvasWebSocketServer, flushAll as flushAllCanvasBuffers } from './websocket/canvasSocket.js';
 
 // Import subscription scheduler
 import { initializeSubscriptionScheduler } from './modules/workspace/services/subscriptionScheduler.js';
@@ -142,7 +144,7 @@ app.get('/health', (req, res) => {
     success: true, 
     message: 'VendorDashboard Backend is running', 
     timestamp: new Date().toISOString(),
-    modules: ['PM', 'Vendor', 'Workspace', 'RBAC']
+    modules: ['PM', 'Vendor', 'Workspace', 'RBAC', 'AI']
   });
 });
 
@@ -221,10 +223,24 @@ async function loadModules() {
     app.use('/api/rbac', rbacModule.rbacRoutes);
     console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
 
+    // Load AI Module
+    console.log('🔄 Loading AI Module...');
+    const aiModule = await import('./modules/ai/index.js');
+    app.use('/api/ai', aiModule.aiRoutes);
+    console.log('✅ AI Module loaded');
+
     console.log('🎉 All modules loaded successfully');
     
     // Initialize subscription scheduler
     initializeSubscriptionScheduler();
+
+    // Initialize AI scheduled reports & reminders cron
+    const { initializeSchedulerCron } = await import('./modules/ai/services/schedulerCron.js');
+    initializeSchedulerCron();
+
+    // Initialize proactive alerts cron (anomaly detection every 15 min)
+    const { initializeProactiveAlertsCron } = await import('./modules/ai/services/proactiveAlertsCron.js');
+    initializeProactiveAlertsCron();
   } catch (error) {
     console.error('❌ Error loading modules:', error);
   }
@@ -233,6 +249,7 @@ async function loadModules() {
 // === Non-modular API Routes ===
 app.use('/api/auth', dynamoAuthRoutes); // Google login/callback/set-role
 app.use('/api/auth', handoffRoutes); // Vendor-to-client handoff routes
+app.use('/api/vendor/tenders', vendorTendersRoute); // Proxy: vendor tenders from Sales Backend
 app.use('/api/auth/passkey', passkeyRoutes); // Passkey MFA routes
 app.use('/api/files', fileRoutes); // File upload/delete routes
 app.use('/api/assets', assetsRoutes); // Assets upload/delete routes
@@ -251,9 +268,29 @@ app.use('/api', sendProgressEmailRoutes); // Register sendProgressEmail route
 // Structured error logger — replaces basic console.error(err.stack)
 app.use(errorLogger);
 
-// Initialize WebSocket server
+// Initialize WebSocket servers
+// IMPORTANT: Canvas WS must register its upgrade handler BEFORE notification WS
+// because both listen on server 'upgrade' event. Canvas handles /api/workspace/ws/*
+// and notification handles /api/notifications/ws/*. Neither should destroy unmatched sockets.
+const canvasWss = initCanvasWebSocketServer(server);
+console.log('✅ Canvas WebSocket server initialized');
+
 const wss = initWebSocketServer(server);
-console.log('✅ WebSocket server initialized');
+console.log('✅ Notification WebSocket server initialized');
+
+// Graceful shutdown: flush canvas buffers before exit
+const gracefulShutdown = async (signal) => {
+  console.log(`\n🛑 ${signal} received. Flushing canvas buffers...`);
+  try {
+    await flushAllCanvasBuffers();
+    console.log('✅ Canvas buffers flushed. Shutting down.');
+  } catch (err) {
+    console.error('❌ Error flushing canvas buffers:', err.message);
+  }
+  process.exit(0);
+};
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 // Log the port that will be used
 if (!PORT) {

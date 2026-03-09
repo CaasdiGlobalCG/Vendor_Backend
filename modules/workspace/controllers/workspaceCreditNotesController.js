@@ -241,5 +241,104 @@ const getCreditNoteStats = async (req, res) => {
   }
 };
 
-export { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats };
+export { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats, updateCreditNoteRequestStatus };
+
+
+/**
+ * Update credit note request status (vendor acknowledges / accepts)
+ * @route PATCH /api/workspace/credit-notes/:creditNoteId/status
+ * @access Private (Vendor)
+ */
+const updateCreditNoteRequestStatus = async (req, res) => {
+  try {
+    const { creditNoteId } = req.params;
+    const { status, vendorNotes } = req.body;
+    const vendorId = req.user?.vendorId || req.body?.vendorId;
+
+    if (!creditNoteId || !status) {
+      return res.status(400).json({
+        success: false,
+        message: 'creditNoteId and status are required',
+      });
+    }
+
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'vendorId is required (from auth or body)',
+      });
+    }
+
+    const validStatuses = ['acknowledged', 'vendor_processing', 'vendor_issued', 'rejected'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    const { UpdateItemCommand } = await import('@aws-sdk/client-dynamodb');
+    const { marshall } = await import('@aws-sdk/util-dynamodb');
+
+    const updateExpr = 'SET #status = :status, updatedAt = :updatedAt, vendorNotes = :vendorNotes, vendorResponseDate = :responseDate';
+
+    const params = {
+      TableName: creditNotesByVendorTable,
+      Key: marshall({ vendorId, creditNoteId }),
+      UpdateExpression: updateExpr,
+      ExpressionAttributeNames: {
+        '#status': 'status',
+      },
+      ExpressionAttributeValues: marshall({
+        ':status': status,
+        ':updatedAt': now,
+        ':vendorNotes': vendorNotes || '',
+        ':responseDate': now,
+      }),
+      ReturnValues: 'ALL_NEW',
+    };
+
+    const command = new UpdateItemCommand(params);
+    const result = await dbClient.send(command);
+
+    const updatedItem = unmarshall(result.Attributes);
+
+    // Sync status back to workspace_return_requests so PM can track progress
+    if (updatedItem.returnRequestId) {
+      try {
+        const returnUpdateParams = {
+          TableName: 'workspace_return_requests',
+          Key: marshall({ returnRequestId: updatedItem.returnRequestId }),
+          UpdateExpression: 'SET creditNoteStatus = :cnStatus, updatedAt = :updatedAt',
+          ExpressionAttributeValues: marshall({
+            ':cnStatus': status,
+            ':updatedAt': now,
+          }),
+        };
+        const returnUpdateCmd = new UpdateItemCommand(returnUpdateParams);
+        await dbClient.send(returnUpdateCmd);
+        console.log(`✅ Synced status '${status}' back to return request ${updatedItem.returnRequestId}`);
+      } catch (syncErr) {
+        console.error('⚠️ Failed to sync status to return request (non-fatal):', syncErr.message);
+      }
+    }
+
+    console.log(`✅ Credit note ${creditNoteId} status updated to ${status}`);
+
+    return res.status(200).json({
+      success: true,
+      message: `Credit note request ${status} successfully`,
+      data: updatedItem,
+    });
+  } catch (error) {
+    console.error('❌ Error updating credit note request status:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update credit note request status',
+      error: error.message,
+    });
+  }
+};
 

@@ -546,6 +546,8 @@ export const updateSubtaskCanvas = async (req, res) => {
     });
     
     // Verify the nodes were actually saved to DynamoDB by reading back
+    // NOTE: This verification runs BEFORE the response is sent to ensure data integrity
+    let verificationPassed = true;
     try {
       const { WORKSPACES_TABLE } = await import('../../../config/aws.js');
       // Wait a moment for eventual consistency
@@ -565,6 +567,7 @@ export const updateSubtaskCanvas = async (req, res) => {
             taskId,
             availableTaskIds: itemTasks.map(t => t?.id).filter(Boolean)
           });
+          verificationPassed = false;
         }
         if (savedTask && !savedSubtask) {
           console.warn('⚠️ Backend: Verification could not find subtaskId in saved task:', {
@@ -572,6 +575,7 @@ export const updateSubtaskCanvas = async (req, res) => {
             subtaskId,
             availableSubtaskIds: (savedTask?.subtasks || []).map(st => st?.id).filter(Boolean)
           });
+          verificationPassed = false;
         }
         const savedCanvasNodes = savedSubtask?.canvasData?.nodes || [];
         const savedCanvasEdges = savedSubtask?.canvasData?.edges || [];
@@ -594,14 +598,29 @@ export const updateSubtaskCanvas = async (req, res) => {
           console.error('❌ Backend: VERIFICATION MISMATCH (subtask canvas)!');
           console.error('❌ Backend: Expected nodes count:', nodes?.length || 0);
           console.error('❌ Backend: Actual nodes count in DB (subtask canvas):', savedCanvasNodes.length);
+          verificationPassed = false;
         } else {
           console.log('✅ Backend: Verification passed (subtask canvas) - nodes match!');
         }
       } else {
         console.error('❌ Backend: Verification failed - workspace not found in DynamoDB!');
+        verificationPassed = false;
       }
     } catch (verifyErr) {
       console.error('❌ Backend: Error during verification:', verifyErr.message);
+      verificationPassed = false;
+    }
+
+    // Only send response if verification passed, otherwise return error with diagnostic info
+    if (!verificationPassed) {
+      console.error('❌ Backend: Aborting response - verification failed for subtask canvas update');
+      return res.status(500).json({ 
+        message: 'Subtask canvas update verification failed',
+        error: 'Canvas data verification failed. The update may not have persisted correctly to DynamoDB.',
+        subtaskId,
+        taskId,
+        nodesCount: nodes?.length || 0
+      });
     }
     
     res.status(200).json({
