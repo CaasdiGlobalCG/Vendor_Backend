@@ -197,8 +197,42 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
       }
     }
 
-    // If no vendor and not a team member, check for an existing Google user (fallback)
+    // If no vendor and not a team member, check for an existing Google user (fallback).
+    // BUT first, check if the user was removed from RBAC — blocked users must NOT
+    // get a valid response via google_users, otherwise VendorContext hydrates and
+    // the removed user sees the dashboard during the RBAC loading window.
     if (!vendor) {
+      const userId = req.auth?.sub;
+      if (userId) {
+        try {
+          const { DynamoDBDocumentClient: DocC2, QueryCommand: QC2 } = await import('@aws-sdk/lib-dynamodb');
+          const { DynamoDBClient: DC2 } = await import('@aws-sdk/client-dynamodb');
+          const _ddb2 = new DC2({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _doc2 = DocC2.from(_ddb2);
+          const MEM_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
+          const removedResult = await _doc2.send(new QC2({
+            TableName: MEM_TABLE,
+            IndexName: 'UserOrgsIndex',
+            KeyConditionExpression: 'userId = :uid',
+            ExpressionAttributeValues: { ':uid': userId },
+            ProjectionExpression: '#s',
+            ExpressionAttributeNames: { '#s': 'status' },
+            Limit: 10,
+          }));
+          const hasRemovedRecord = removedResult.Items?.some(m => m.status === 'removed');
+          const hasActiveRecord = removedResult.Items?.some(m => m.status === 'active');
+          if (hasRemovedRecord && !hasActiveRecord) {
+            return res.status(403).json({
+              success: false,
+              code: 'RBAC_001',
+              message: 'Your access to this organization has been revoked.',
+            });
+          }
+        } catch (checkErr) {
+          console.warn('[/me] Removal status check failed:', checkErr?.message);
+        }
+      }
+
       const googleUser = await DynamoGoogleUser.getGoogleUserByEmail(email);
       if (googleUser) {
         vendor = {

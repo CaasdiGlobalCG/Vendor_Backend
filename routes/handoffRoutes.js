@@ -125,6 +125,32 @@ router.post('/session', async (req, res) => {
     const token = authHeader.substring('Bearer '.length);
     const decoded = await verifyCognitoToken(token);
 
+    // Block removed members from establishing a session
+    if (decoded?.sub) {
+      try {
+        const { DynamoDBDocumentClient, QueryCommand } = await import('@aws-sdk/lib-dynamodb');
+        const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+        const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+        const _doc = DynamoDBDocumentClient.from(_ddb);
+        const memResult = await _doc.send(new QueryCommand({
+          TableName: process.env.RBAC_MEMBERS_TABLE || 'rbac_members',
+          IndexName: 'UserOrgsIndex',
+          KeyConditionExpression: 'userId = :uid',
+          ExpressionAttributeValues: { ':uid': decoded.sub },
+          ProjectionExpression: '#s',
+          ExpressionAttributeNames: { '#s': 'status' },
+          Limit: 10,
+        }));
+        const hasRemoved = memResult.Items?.some(m => m.status === 'removed');
+        const hasActive = memResult.Items?.some(m => m.status === 'active');
+        if (hasRemoved && !hasActive) {
+          return res.status(403).json({ error: 'Your access has been revoked.', code: 'RBAC_001' });
+        }
+      } catch (checkErr) {
+        console.warn('[auth/session] Removal check failed:', checkErr?.message);
+      }
+    }
+
     const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
     const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
     let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';

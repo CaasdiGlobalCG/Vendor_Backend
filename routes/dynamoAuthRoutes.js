@@ -103,7 +103,48 @@ router.get(
       }
 
       // If not found in either table, create a new Google user
+      // BUT first \u2014 check if this user was removed from RBAC. If they have a
+      // 'removed' record (and no 'active' membership), deny the login entirely.
       if (!vendor && !googleUser) {
+        try {
+          const { DynamoDBDocumentClient, QueryCommand } = await import('@aws-sdk/lib-dynamodb');
+          const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+          const { AdminGetUserCommand } = await import('@aws-sdk/client-cognito-identity-provider');
+          const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _doc = DynamoDBDocumentClient.from(_ddb);
+
+          // Look up Cognito sub for this email to query rbac_members by userId
+          let cognitoSub = null;
+          try {
+            const cogUser = await cognitoClient.send(new AdminGetUserCommand({
+              UserPoolId: process.env.COGNITO_USER_POOL_ID,
+              Username: email,
+            }));
+            cognitoSub = cogUser.UserAttributes?.find(a => a.Name === 'sub')?.Value;
+          } catch (_) { /* user may not exist in Cognito yet */ }
+
+          if (cognitoSub) {
+            const memResult = await _doc.send(new QueryCommand({
+              TableName: process.env.RBAC_MEMBERS_TABLE || 'rbac_members',
+              IndexName: 'UserOrgsIndex',
+              KeyConditionExpression: 'userId = :uid',
+              ExpressionAttributeValues: { ':uid': cognitoSub },
+              ProjectionExpression: '#s',
+              ExpressionAttributeNames: { '#s': 'status' },
+              Limit: 10,
+            }));
+            const hasRemoved = memResult.Items?.some(m => m.status === 'removed');
+            const hasActive = memResult.Items?.some(m => m.status === 'active');
+            if (hasRemoved && !hasActive) {
+              console.warn(`[Google OAuth] Blocked removed user ${email} from creating google_users record`);
+              const frontendUrl = process.env.VENDOR_FRONTEND_URL || 'https://www.caasdiglobal.in';
+              return res.redirect(`${frontendUrl}/login?error=access_revoked`);
+            }
+          }
+        } catch (checkErr) {
+          console.warn('[Google OAuth] Removal check failed:', checkErr?.message);
+        }
+
         console.log("Creating new Google user in DynamoDB:", email);
         
         // Create new Google user
