@@ -12,7 +12,7 @@ import { TABLES } from '../config/tables.js';
 import { canManageUser } from '../utils/permission.utils.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
 import { derivePlatformAccess } from '../config/modules.js';
-import { sendInvitationEmail } from '../services/emailService.js';
+import { sendInvitationEmail, sendRemovalEmail } from '../services/emailService.js';
 import crypto from 'crypto';
 
 /**
@@ -145,6 +145,24 @@ export async function inviteMember(req, res) {
       if (existing.status === 'invited') {
         return res.status(409).json({ error: 'An invitation is already pending for this email' });
       }
+    }
+
+    // ── Cross-org membership check: ensure user isn't active in another org ──
+    const crossOrgResult = await docClient.send(new QueryCommand({
+      TableName: TABLES.MEMBERS,
+      IndexName: 'EmailIndex',
+      KeyConditionExpression: 'email = :email',
+      FilterExpression: '#s IN (:active, :invited)',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: { ':email': normalizedEmail, ':active': 'active', ':invited': 'invited' },
+    }));
+
+    const otherOrgMembership = (crossOrgResult.Items || []).find(m => m.orgId !== orgId);
+    if (otherOrgMembership) {
+      return res.status(409).json({
+        error: 'Member belongs to another organization',
+        message: 'This person is currently associated with another organization. They must be removed from their current organization before they can be invited to yours.',
+      });
     }
 
     // ── Derive platformAccess from role's effective permissions ──
@@ -379,8 +397,15 @@ export async function changeMemberRole(req, res) {
  */
 export async function removeMember(req, res) {
   try {
-    const { orgId, userId: callerId, roleLevel: callerLevel } = req.rbac;
+    const { orgId, orgType, userId: callerId, roleLevel: callerLevel } = req.rbac;
     const { userId: targetUserId } = req.params;
+    const { reason } = req.body || {};
+
+    // ── Reason is required ──
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ error: 'A reason for removal is required' });
+    }
+    const trimmedReason = String(reason).trim().slice(0, 500);
 
     // ── Can't remove yourself ──
     if (targetUserId === callerId) {
@@ -413,17 +438,18 @@ export async function removeMember(req, res) {
       });
     }
 
-    // ── Soft delete ──
+    // ── Soft delete with reason ──
     const now = new Date().toISOString();
     await docClient.send(new UpdateCommand({
       TableName: TABLES.MEMBERS,
       Key: { orgId, userId: targetUserId },
-      UpdateExpression: 'SET #s = :removed, updatedAt = :now, removedBy = :caller',
+      UpdateExpression: 'SET #s = :removed, updatedAt = :now, removedBy = :caller, removalReason = :reason, removedAt = :now',
       ExpressionAttributeNames: { '#s': 'status' },
       ExpressionAttributeValues: {
         ':removed': 'removed',
         ':now': now,
         ':caller': callerId,
+        ':reason': trimmedReason,
       },
     }));
 
@@ -432,7 +458,30 @@ export async function removeMember(req, res) {
       targetUserId,
       targetEmail: targetMember.email,
       previousRole: targetMember.roleId,
+      reason: trimmedReason,
     }, req.auth?.email);
+
+    // ── Send removal notification email (best-effort) ──
+    let orgName = orgId;
+    try {
+      const orgResult = await docClient.send(new GetCommand({
+        TableName: TABLES.ORGANIZATIONS,
+        Key: { orgId },
+        ProjectionExpression: 'orgName',
+      }));
+      if (orgResult.Item?.orgName) orgName = orgResult.Item.orgName;
+    } catch (orgErr) {
+      console.warn('[RBAC] Could not fetch org name for removal email:', orgErr.message);
+    }
+
+    const removerName = req.auth?.name || req.auth?.email || 'An administrator';
+    sendRemovalEmail({
+      to: targetMember.email,
+      orgName,
+      removedByName: removerName,
+      reason: trimmedReason,
+      orgType: orgType || 'vendor',
+    }).catch(err => console.error('[RBAC] Removal email error:', err.message));
 
     return res.status(200).json({
       success: true,

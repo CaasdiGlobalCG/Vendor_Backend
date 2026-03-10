@@ -140,6 +140,92 @@ export function buildInvitationEmail({
 }
 
 /**
+ * Build a responsive HTML email notifying a member they've been removed.
+ *
+ * @param {Object} params
+ * @param {string} params.orgName      – Organization display name
+ * @param {string} params.removedByName – Person who removed them
+ * @param {string} params.reason        – Reason for removal
+ * @param {string} [params.orgType]     – 'vendor' | 'client'
+ * @returns {string} Complete HTML email body
+ */
+export function buildRemovalEmail({ orgName, removedByName, reason, orgType = 'vendor' }) {
+  const brandColor = orgType === 'client' ? '#0d9488' : '#0d9488';
+  const brandColorDark = orgType === 'client' ? '#0f766e' : '#0f766e';
+
+  const reasonBlock = reason
+    ? `
+      <div style="background-color: #f1f5f9; border-left: 4px solid ${brandColor}; padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0;">
+        <p style="margin: 0 0 4px 0; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em;">Reason provided</p>
+        <p style="margin: 0; color: #334155; font-size: 15px; line-height: 1.6; font-style: italic;">&ldquo;${escapeHtml(reason)}&rdquo;</p>
+      </div>`
+    : '';
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Organization Membership Update</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="600" style="max-width: 600px; width: 100%;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, ${brandColor} 0%, ${brandColorDark} 100%); padding: 32px 40px; border-radius: 12px 12px 0 0; text-align: center;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 700; letter-spacing: -0.025em;">Caasdi</h1>
+              <p style="margin: 8px 0 0 0; color: rgba(255,255,255,0.85); font-size: 14px;">Membership Update</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="background-color: #ffffff; padding: 40px; border-left: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0;">
+
+              <h2 style="margin: 0 0 8px 0; color: #1e293b; font-size: 22px; font-weight: 600;">Your access has been revoked</h2>
+              <p style="margin: 0 0 24px 0; color: #475569; font-size: 16px; line-height: 1.6;">
+                Your membership in <strong>${escapeHtml(orgName)}</strong> has been removed by
+                <strong>${escapeHtml(removedByName)}</strong>.
+              </p>
+
+              ${reasonBlock}
+
+              <!-- Info box -->
+              <div style="background-color: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 16px 20px; margin-top: 24px;">
+                <p style="margin: 0; color: #0c4a6e; font-size: 14px; line-height: 1.6;">
+                  If you believe this was done in error, please contact your organization administrator directly.
+                </p>
+              </div>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8fafc; padding: 24px 40px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px; text-align: center;">
+              <p style="margin: 0 0 8px 0; color: #94a3b8; font-size: 13px;">
+                This email was sent by Caasdi on behalf of ${escapeHtml(orgName)}.
+              </p>
+              <p style="margin: 0; color: #cbd5e1; font-size: 12px;">
+                This is an automated notification. No action is required.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+/**
  * Escape HTML special characters to prevent XSS in email templates.
  * @param {string} str – Raw string
  * @returns {string} Escaped string
