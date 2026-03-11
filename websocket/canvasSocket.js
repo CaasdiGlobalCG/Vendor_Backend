@@ -18,6 +18,12 @@ const FLUSH_INTERVAL_MS = 5000;
 // Maximum ops to buffer before forcing an early flush
 const MAX_BUFFER_SIZE = 200;
 
+// Heartbeat interval — native WS ping every 25s keeps ALB/nginx alive (< 60s idle timeout)
+const HEARTBEAT_INTERVAL_MS = 25000;
+
+// If no pong received within this time after ping, consider connection dead
+const HEARTBEAT_TIMEOUT_MS = 10000;
+
 // Reference to DynamoDB helpers — lazily loaded to avoid circular imports
 let _DynamoWorkspace = null;
 let _dynamoDB = null;
@@ -373,6 +379,23 @@ export const initCanvasWebSocketServer = (server) => {
       }, FLUSH_INTERVAL_MS);
     }
 
+    // ---- Server-side heartbeat (native WS ping/pong) ----
+    // Keeps ALB/nginx connections alive and detects dead clients
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; }); // Native pong response
+
+    const heartbeatTimer = setInterval(() => {
+      if (ws.isAlive === false) {
+        // No pong received since last ping — connection is dead
+        console.log(`🎨 Canvas WS: Heartbeat timeout for ${userName} (${userId}), terminating`);
+        clearInterval(heartbeatTimer);
+        ws.terminate(); // Force close — will trigger 'close' handler
+        return;
+      }
+      ws.isAlive = false;
+      ws.ping(); // Send native WebSocket ping frame
+    }, HEARTBEAT_INTERVAL_MS);
+
     // Send confirmation
     ws.send(JSON.stringify({
       type: 'CONNECTED',
@@ -406,11 +429,13 @@ export const initCanvasWebSocketServer = (server) => {
 
     ws.on('close', () => {
       console.log(`🎨 Canvas WS: User ${userName} (${userId}) left workspace ${workspaceId}`);
+      clearInterval(heartbeatTimer);
       removeUserFromRoom(ws);
     });
 
     ws.on('error', (err) => {
       console.error(`🎨 Canvas WS: Error for user ${userId} in workspace ${workspaceId}:`, err.message);
+      clearInterval(heartbeatTimer);
     });
   });
 

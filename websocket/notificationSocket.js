@@ -62,6 +62,21 @@ export const initWebSocketServer = (server) => {
             userType
         });
         
+        // ---- Server-side heartbeat (native WS ping/pong) ----
+        ws.isAlive = true;
+        ws.on('pong', () => { ws.isAlive = true; });
+
+        const heartbeatTimer = setInterval(() => {
+          if (ws.isAlive === false) {
+            console.log(`WebSocket: Heartbeat timeout for ${userType} ${userId}, terminating`);
+            clearInterval(heartbeatTimer);
+            ws.terminate();
+            return;
+          }
+          ws.isAlive = false;
+          ws.ping();
+        }, 25000);
+
         // Connection established message
         ws.send(JSON.stringify({
             type: 'connection',
@@ -93,6 +108,7 @@ export const initWebSocketServer = (server) => {
         // Handle connection close
         ws.on('close', () => {
             console.log(`WebSocket: Connection closed for ${userType} ${userId}`);
+            clearInterval(heartbeatTimer);
             
             // Remove the connection
             if (connectedUsers[userId]) {
@@ -111,6 +127,7 @@ export const initWebSocketServer = (server) => {
         // Handle errors
         ws.on('error', (error) => {
             console.error(`WebSocket: Error for ${userType} ${userId}:`, error);
+            clearInterval(heartbeatTimer);
         });
     });
     

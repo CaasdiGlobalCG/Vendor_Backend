@@ -1156,4 +1156,58 @@ router.delete('/projects/:id', async (req, res) => {
   }
 });
 
+// ─── GET /preferences ─── Fetch vendor email/notification preferences
+router.get('/preferences', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const email = req.user?.email;
+    if (!email) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const vendor = await DynamoVendor.getVendorByEmail(email);
+    if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+
+    res.json({
+      success: true,
+      emailPreferences: vendor.emailPreferences || {},
+    });
+  } catch (error) {
+    console.error('Error fetching preferences:', error);
+    res.status(500).json({ success: false, message: 'Error fetching preferences' });
+  }
+});
+
+// ─── PUT /preferences ─── Update vendor email/notification preferences
+router.put('/preferences', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const email = req.user?.email;
+    if (!email) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const vendor = await DynamoVendor.getVendorByEmail(email);
+    if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+
+    const { emailPreferences } = req.body;
+    if (!emailPreferences || typeof emailPreferences !== 'object') {
+      return res.status(400).json({ success: false, message: 'Invalid preferences payload' });
+    }
+
+    // Only allow boolean values for known preference keys
+    const allowedKeys = [
+      'orderNotifications', 'promotions', 'newsletter', 'updates',
+      'leadAlerts', 'quotationAlerts', 'systemAlerts',
+    ];
+    const sanitized = {};
+    for (const key of allowedKeys) {
+      if (key in emailPreferences) {
+        sanitized[key] = Boolean(emailPreferences[key]);
+      }
+    }
+
+    await DynamoVendor.updateVendor(vendor.id, { emailPreferences: sanitized });
+
+    res.json({ success: true, message: 'Preferences updated', emailPreferences: sanitized });
+  } catch (error) {
+    console.error('Error updating preferences:', error);
+    res.status(500).json({ success: false, message: 'Error updating preferences' });
+  }
+});
+
 export default router;

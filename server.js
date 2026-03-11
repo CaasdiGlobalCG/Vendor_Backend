@@ -223,6 +223,12 @@ async function loadModules() {
     app.use('/api/rbac', rbacModule.rbacRoutes);
     console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
 
+    // Load B2B Module (B2B returns: debit notes, credit notes from/to logistics)
+    console.log('🔄 Loading B2B Module...');
+    const b2bVendorRoutes = await import('./modules/b2b/routes/b2bVendorRoutes.js');
+    app.use('/api/b2b', b2bVendorRoutes.default);
+    console.log('✅ B2B Module loaded');
+
     // Load AI Module
     console.log('🔄 Loading AI Module...');
     const aiModule = await import('./modules/ai/index.js');
