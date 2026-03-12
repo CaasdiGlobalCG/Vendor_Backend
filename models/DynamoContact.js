@@ -19,7 +19,7 @@ export const createContact = async (contactData) => {
     await dynamoDB.put(params).promise();
     return params.Item;
   } catch (error) {
-    console.error('Error creating contact in DynamoDB:', error);
+    console.error('Error creating contact in DynamoDB table: ', error);
     throw error;
   }
 };
