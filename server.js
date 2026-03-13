@@ -92,6 +92,9 @@ const server = http.createServer(app);
 // Connect to MongoDB (still needed for GoogleUser model)
 connectDB(); // your reusable connectDB function
 
+
+console.log("Forced Push to trigger deployment after backend refactor. Ignore if you see this in commit history.");
+
 app.use(cors({
   origin: allowedOrigins,
   credentials: true,
@@ -280,6 +283,7 @@ app.use(errorLogger);
 // and notification handles /api/notifications/ws/*. Neither should destroy unmatched sockets.
 const canvasWss = initCanvasWebSocketServer(server);
 console.log('✅ Canvas WebSocket server initialized');
+
 
 const wss = initWebSocketServer(server);
 console.log('✅ Notification WebSocket server initialized');
