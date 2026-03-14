@@ -73,6 +73,65 @@ const getPem = async (kid) => {
   }
 };
 
+async function getVendorAccessGateByEmail(email) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail) {
+    return { allowed: true };
+  }
+
+  try {
+    const { DynamoDBDocumentClient, QueryCommand } = await import('@aws-sdk/lib-dynamodb');
+    const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+    const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+    const _doc = DynamoDBDocumentClient.from(_ddb);
+
+    const result = await _doc.send(new QueryCommand({
+      TableName: process.env.RBAC_MEMBERS_TABLE || 'rbac_members',
+      IndexName: 'EmailIndex',
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': normalizedEmail },
+      ProjectionExpression: 'orgType, #s, roleId, roleName',
+      ExpressionAttributeNames: { '#s': 'status' },
+      Limit: 20,
+    }));
+
+    const allMemberships = result.Items || [];
+    const vendorMemberships = allMemberships.filter((m) => m.orgType === 'vendor');
+    const scoped = vendorMemberships.length ? vendorMemberships : allMemberships;
+
+    if (!scoped.length) {
+      return { allowed: true };
+    }
+
+    const hasActiveSuperAdmin = scoped.some((m) => {
+      if (m.status !== 'active') return false;
+      const roleId = String(m.roleId || '').toLowerCase();
+      const roleName = String(m.roleName || '').toLowerCase();
+      return roleId === 'super_admin' || roleId === 'superadmin' || roleName === 'super admin';
+    });
+
+    if (hasActiveSuperAdmin) {
+      return { allowed: true };
+    }
+
+    const hasRemoved = scoped.some((m) => m.status === 'removed');
+    const hasActive = scoped.some((m) => m.status === 'active');
+
+    if (hasRemoved && !hasActive) {
+      return {
+        allowed: false,
+        code: 'RBAC_001',
+        message: 'You no longer have access to this organization.',
+      };
+    }
+
+    return { allowed: true };
+  } catch (err) {
+    console.warn('[auth] vendor access gate check failed (allowing login):', err?.message);
+    return { allowed: true };
+  }
+}
+
 // Google login route
 router.get("/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
@@ -83,6 +142,12 @@ router.get(
   async (req, res) => {
     try {
       const { email, displayName, id: googleId } = req.user;
+
+      const accessGate = await getVendorAccessGateByEmail(email);
+      if (!accessGate.allowed) {
+        const frontendUrl = process.env.VENDOR_FRONTEND_URL || process.env.VENDOR_DASH || 'https://www.caasdiglobal.in';
+        return res.redirect(`${frontendUrl}/login?error=access_revoked`);
+      }
 
       // First try to find in DynamoDB vendors
       let vendor = await DynamoVendor.getVendorByEmail(email);
@@ -424,6 +489,23 @@ router.get("/verify", async (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
+    const accessGate = await getVendorAccessGateByEmail(normalizedEmail);
+    if (!accessGate.allowed) {
+      return {
+        email: normalizedEmail,
+        role: 'vendor',
+        lastSelectedRole: null,
+        roleSelected: false,
+        isTeamMember: false,
+        platformAccess: [],
+        accessDenied: {
+          code: accessGate.code || 'RBAC_001',
+          message: accessGate.message || 'Your access has been revoked.',
+        },
+        source: 'users',
+      };
+    }
+
     // If the user has a vendor record, treat them as vendor by default (prevents new vendor accounts
     // from bouncing to /role-selection when they haven't explicitly selected a role yet).
     let vendorRecord = null;
@@ -639,6 +721,13 @@ router.get("/verify", async (req, res) => {
       displayNameFallback: req.user.displayName,
       roleFallback: req.user.role
     });
+    if (payload?.accessDenied?.code) {
+      return res.status(403).json({
+        error: 'Access revoked',
+        code: payload.accessDenied.code,
+        message: payload.accessDenied.message,
+      });
+    }
     return res.json(payload);
   }
   const token = req.headers.authorization?.split(" ")[1];
@@ -665,6 +754,13 @@ router.get("/verify", async (req, res) => {
         displayNameFallback: decoded?.name,
         roleFallback: 'vendor'
       });
+      if (payload?.accessDenied?.code) {
+        return res.status(403).json({
+          error: 'Access revoked',
+          code: payload.accessDenied.code,
+          message: payload.accessDenied.message,
+        });
+      }
       return res.json(payload);
     } catch (err) {
       console.error("Error verifying token:", err.stack);

@@ -1,6 +1,6 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { getPem } from '../utils/jwksUtils.js';
 import { createSession, getTokenForSession } from '../utils/sessionStore.js';
 import * as DynamoUser from '../models/DynamoUser.js';
@@ -113,6 +113,59 @@ async function getAuthTokenFromRequestOrBody(req) {
   return token;
 }
 
+async function getVendorAccessGateByUserId(userId) {
+  if (!userId) {
+    return { allowed: true };
+  }
+
+  try {
+    const memResult = await docClient.send(new QueryCommand({
+      TableName: process.env.RBAC_MEMBERS_TABLE || 'rbac_members',
+      IndexName: 'UserOrgsIndex',
+      KeyConditionExpression: 'userId = :uid',
+      ExpressionAttributeValues: { ':uid': userId },
+      ProjectionExpression: 'orgType, #s, roleId, roleName',
+      ExpressionAttributeNames: { '#s': 'status' },
+      Limit: 20,
+    }));
+
+    const allMemberships = memResult.Items || [];
+    const vendorMemberships = allMemberships.filter((m) => m.orgType === 'vendor');
+    const scoped = vendorMemberships.length ? vendorMemberships : allMemberships;
+
+    if (!scoped.length) {
+      return { allowed: true };
+    }
+
+    const hasActiveSuperAdmin = scoped.some((m) => {
+      if (m.status !== 'active') return false;
+      const roleId = String(m.roleId || '').toLowerCase();
+      const roleName = String(m.roleName || '').toLowerCase();
+      return roleId === 'super_admin' || roleId === 'superadmin' || roleName === 'super admin';
+    });
+
+    if (hasActiveSuperAdmin) {
+      return { allowed: true };
+    }
+
+    const hasRemoved = scoped.some((m) => m.status === 'removed');
+    const hasActive = scoped.some((m) => m.status === 'active');
+
+    if (hasRemoved && !hasActive) {
+      return {
+        allowed: false,
+        code: 'RBAC_001',
+        message: 'Your access has been revoked.',
+      };
+    }
+
+    return { allowed: true };
+  } catch (err) {
+    console.warn('[auth] vendor access gate check failed (allowing login):', err?.message);
+    return { allowed: true };
+  }
+}
+
 // POST /api/auth/session
 // Establishes a vendor httpOnly auth cookie (sid) from a Cognito JWT.
 // Useful for migrating older clients that still hold the JWT client-side.
@@ -126,30 +179,10 @@ router.post('/session', async (req, res) => {
     const token = authHeader.substring('Bearer '.length);
     const decoded = await verifyCognitoToken(token);
 
-    // Block removed members from establishing a session
-    if (decoded?.sub) {
-      try {
-        const { DynamoDBDocumentClient, QueryCommand } = await import('@aws-sdk/lib-dynamodb');
-        const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
-        const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
-        const _doc = DynamoDBDocumentClient.from(_ddb);
-        const memResult = await _doc.send(new QueryCommand({
-          TableName: process.env.RBAC_MEMBERS_TABLE || 'rbac_members',
-          IndexName: 'UserOrgsIndex',
-          KeyConditionExpression: 'userId = :uid',
-          ExpressionAttributeValues: { ':uid': decoded.sub },
-          ProjectionExpression: '#s',
-          ExpressionAttributeNames: { '#s': 'status' },
-          Limit: 10,
-        }));
-        const hasRemoved = memResult.Items?.some(m => m.status === 'removed');
-        const hasActive = memResult.Items?.some(m => m.status === 'active');
-        if (hasRemoved && !hasActive) {
-          return res.status(403).json({ error: 'Your access has been revoked.', code: 'RBAC_001' });
-        }
-      } catch (checkErr) {
-        console.warn('[auth/session] Removal check failed:', checkErr?.message);
-      }
+    // Block removed members before establishing login session; allow Super Admin.
+    const accessGate = await getVendorAccessGateByUserId(decoded?.sub);
+    if (!accessGate.allowed) {
+      return res.status(403).json({ error: accessGate.message, code: accessGate.code });
     }
 
     const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
@@ -370,6 +403,12 @@ router.get('/handoff/sales-exchange', async (req, res) => {
     // One-time use
     handoffStore.delete(code);
 
+    const entryDecoded = await verifyCognitoToken(entry.token);
+    const accessGate = await getVendorAccessGateByUserId(entryDecoded?.sub);
+    if (!accessGate.allowed) {
+      return res.status(403).json({ error: accessGate.message, code: accessGate.code });
+    }
+
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
       authToken: entry.token,
@@ -488,8 +527,7 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
 
     // Mark that the last-used app/role for this user is vendor.
     try {
-      const decoded = await verifyCognitoToken(entry.token);
-      await upsertUsersLastSelectedRole(decoded?.email, 'vendor');
+      await upsertUsersLastSelectedRole(entryDecoded?.email, 'vendor');
     } catch (e) {
       console.warn('[handoff/vendor-exchange] could not update users.lastSelectedRole:', e?.message);
     }
@@ -506,13 +544,12 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
 
     // Log LOGIN_SUCCESS for handoff vendor exchange
     try {
-      const handoffDecoded = await verifyCognitoToken(entry.token);
-      const vendorRecord = handoffDecoded?.email ? await DynamoVendor.getVendorByEmail(handoffDecoded.email).catch(() => null) : null;
+      const vendorRecord = entryDecoded?.email ? await DynamoVendor.getVendorByEmail(entryDecoded.email).catch(() => null) : null;
       logSecurityEvent({
         orgId: vendorRecord?.vendorId || 'unknown',
         action: SECURITY_ACTIONS.LOGIN_SUCCESS,
-        actorId: handoffDecoded?.sub || '',
-        actorEmail: handoffDecoded?.email || '',
+        actorId: entryDecoded?.sub || '',
+        actorEmail: entryDecoded?.email || '',
         details: { method: 'handoff-vendor-exchange' },
         metadata: { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent'), requestId: req.requestId },
       });
