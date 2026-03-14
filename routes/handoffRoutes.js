@@ -15,6 +15,7 @@ const router = express.Router();
 // In-memory one-time code store (dev-friendly). For multi-instance/prod, back with DynamoDB/Redis.
 const handoffStore = new Map();
 const HANDOFF_TTL_MS = 60 * 1000;
+const HANDOFF_MIN_TOKEN_TTL_SECONDS = Number(process.env.HANDOFF_MIN_TOKEN_TTL_SECONDS || 120);
 
 function randomCode() {
   // URL-safe-ish code
@@ -250,6 +251,20 @@ router.post('/handoff', async (req, res) => {
     const decoded = await verifyCognitoToken(token);
     const email = decoded?.email;
     if (!email) return res.status(400).json({ error: 'Token missing email' });
+
+    // Prevent issuing handoff codes for tokens that are too close to expiry.
+    // This avoids a common race where handoff is created successfully but exchange fails moments later.
+    const expSeconds = Number(decoded?.exp || 0);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const ttlSeconds = expSeconds - nowSeconds;
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= HANDOFF_MIN_TOKEN_TTL_SECONDS) {
+      return res.status(401).json({
+        error: 'Token expiring too soon for handoff',
+        code: 'TOKEN_EXPIRED',
+        message: 'Your session is about to expire. Please sign in again before switching apps.',
+        remainingSeconds: Math.max(0, ttlSeconds),
+      });
+    }
 
     const normalizedEmail = String(email).trim().toLowerCase();
     let vendorId = null;
