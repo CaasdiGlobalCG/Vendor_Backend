@@ -16,6 +16,7 @@ const router = express.Router();
 const handoffStore = new Map();
 const HANDOFF_TTL_MS = 60 * 1000;
 const HANDOFF_MIN_TOKEN_TTL_SECONDS = Number(process.env.HANDOFF_MIN_TOKEN_TTL_SECONDS || 120);
+const JWT_CLOCK_TOLERANCE_SECONDS = Number(process.env.JWT_CLOCK_TOLERANCE_SECONDS || 120);
 
 function randomCode() {
   // URL-safe-ish code
@@ -39,7 +40,10 @@ async function verifyCognitoToken(token) {
   if (!pem) throw new Error('Invalid key ID');
 
   return await new Promise((resolve, reject) => {
-    jwt.verify(token, pem, { algorithms: ['RS256'] }, (err, decoded) => {
+    jwt.verify(token, pem, {
+      algorithms: ['RS256'],
+      clockTolerance: Math.max(0, JWT_CLOCK_TOLERANCE_SECONDS),
+    }, (err, decoded) => {
       if (err) reject(err);
       else resolve(decoded);
     });
@@ -290,12 +294,14 @@ router.post('/handoff', async (req, res) => {
     const expSeconds = Number(decoded?.exp || 0);
     const nowSeconds = Math.floor(Date.now() / 1000);
     const ttlSeconds = expSeconds - nowSeconds;
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= HANDOFF_MIN_TOKEN_TTL_SECONDS) {
+    const requiredTtlSeconds = HANDOFF_MIN_TOKEN_TTL_SECONDS + Math.max(0, JWT_CLOCK_TOLERANCE_SECONDS);
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= requiredTtlSeconds) {
       return res.status(401).json({
         error: 'Token expiring too soon for handoff',
         code: 'TOKEN_EXPIRED',
         message: 'Your session is about to expire. Please sign in again before switching apps.',
         remainingSeconds: Math.max(0, ttlSeconds),
+        requiredSeconds: requiredTtlSeconds,
       });
     }
 

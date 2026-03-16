@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
 import { getTokenForSession } from '../utils/sessionStore.js';
 import { logSecurityEvent, SECURITY_ACTIONS } from '../modules/logging/services/securityLogger.js';
+const JWT_CLOCK_TOLERANCE_SECONDS = Number(process.env.JWT_CLOCK_TOLERANCE_SECONDS || 120);
 
 /** Helper to build metadata object for security logs */
 function buildMeta(req) {
@@ -69,7 +70,10 @@ export async function authenticateCognitoJwt(req, res, next) {
     }
 
     const decoded = await new Promise((resolve, reject) => {
-      jwt.verify(token, pem, { algorithms: ['RS256'] }, (err, payload) => {
+      jwt.verify(token, pem, {
+        algorithms: ['RS256'],
+        clockTolerance: Math.max(0, JWT_CLOCK_TOLERANCE_SECONDS),
+      }, (err, payload) => {
         if (err) reject(err);
         else resolve(payload);
       });
