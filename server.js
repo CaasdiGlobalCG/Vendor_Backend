@@ -238,6 +238,12 @@ async function loadModules() {
     app.use('/api/ai', aiModule.aiRoutes);
     console.log('✅ AI Module loaded');
 
+    // Load Support Module
+    console.log('🔄 Loading Support Module...');
+    const supportModule = await import('./modules/support/index.js');
+    app.use('/api/support', supportModule.supportRoutes);
+    console.log('✅ Support Module loaded');
+
     console.log('🎉 All modules loaded successfully');
     
     // Initialize subscription scheduler
