@@ -215,17 +215,58 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
             IndexName: 'UserOrgsIndex',
             KeyConditionExpression: 'userId = :uid',
             ExpressionAttributeValues: { ':uid': userId },
-            ProjectionExpression: '#s',
+            ProjectionExpression: '#s, suspendedUntil, suspensionReason',
             ExpressionAttributeNames: { '#s': 'status' },
             Limit: 10,
           }));
           const hasRemovedRecord = removedResult.Items?.some(m => m.status === 'removed');
           const hasActiveRecord = removedResult.Items?.some(m => m.status === 'active');
+          const activeSuspensions = (removedResult.Items || []).filter((m) => {
+            if (m.status !== 'suspended') return false;
+            const untilMs = m.suspendedUntil ? Date.parse(m.suspendedUntil) : NaN;
+            return !Number.isFinite(untilMs) || untilMs > Date.now();
+          });
+
+          if (activeSuspensions.length > 0 && !hasActiveRecord) {
+            const blocked = activeSuspensions
+              .slice()
+              .sort((a, b) => {
+                const aMs = a.suspendedUntil ? Date.parse(a.suspendedUntil) : Number.POSITIVE_INFINITY;
+                const bMs = b.suspendedUntil ? Date.parse(b.suspendedUntil) : Number.POSITIVE_INFINITY;
+                return aMs - bMs;
+              })[0];
+
+            const untilMs = blocked?.suspendedUntil ? Date.parse(blocked.suspendedUntil) : NaN;
+            let periodText = 'until it is manually lifted';
+            if (Number.isFinite(untilMs)) {
+              const remainingMs = Math.max(0, untilMs - Date.now());
+              const totalMinutes = Math.ceil(remainingMs / 60000);
+              const days = Math.floor(totalMinutes / (24 * 60));
+              const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+              const minutes = totalMinutes % 60;
+              const pieces = [];
+              if (days > 0) pieces.push(`${days}d`);
+              if (hours > 0) pieces.push(`${hours}h`);
+              if (minutes > 0 || pieces.length === 0) pieces.push(`${minutes}m`);
+              periodText = `until ${new Date(untilMs).toLocaleString('en-IN')} (${pieces.join(' ')} remaining)`;
+            }
+
+            const reasonText = blocked?.suspensionReason
+              ? ` Reason: ${String(blocked.suspensionReason).trim()}`
+              : '';
+
+            return res.status(403).json({
+              success: false,
+              code: 'RBAC_002',
+              message: `Your account has been suspended ${periodText}.${reasonText} Contact the org administrator.`,
+            });
+          }
+
           if (hasRemovedRecord && !hasActiveRecord) {
             return res.status(403).json({
               success: false,
               code: 'RBAC_001',
-              message: 'Your access to this organization has been revoked.',
+              message: 'You have been removed from this organization.',
             });
           }
         } catch (checkErr) {

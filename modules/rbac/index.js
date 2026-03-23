@@ -21,3 +21,6 @@ export { TABLES } from './config/tables.js';
 
 // Utils — exported for use in controllers that need permission checks
 export { hasPermission, isSuperAdmin, canManageUser, buildPermissionMap } from './utils/permission.utils.js';
+
+// Services — exported for module bootstrap hooks
+export { initializeSuspensionScheduler } from './services/suspensionScheduler.js';

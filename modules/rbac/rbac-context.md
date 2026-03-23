@@ -128,6 +128,16 @@ node modules/rbac/scripts/seedDefaults.js        # Seed plans + roles
 node modules/rbac/scripts/backfillSuperAdmins.js # Migrate existing accounts
 ```
 
+## Timed Suspension Auto-Reactivation
+- RBAC module now starts a background scheduler at module bootstrap (`initializeSuspensionScheduler`).
+- Scheduler scans `rbac_members` for rows where:
+  - `status = suspended`
+  - `suspendedUntil` exists and is <= now
+- It updates those members back to `active` and writes audit event `MEMBER_AUTO_UNSUSPENDED`.
+- Tunables:
+  - `RBAC_SUSPENSION_SWEEP_INTERVAL_MS` (default `60000`)
+  - `RBAC_SUSPENSION_SWEEP_BATCH_SIZE` (default `100`)
+
 ## Phase Roadmap
 - **Phase 1** (done): Permissive mode, backfill, GET /me
 - **Phase 2** (done): Team member CRUD, invitations, role management

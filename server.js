@@ -224,6 +224,7 @@ async function loadModules() {
     // doesn't intercept /api/rbac/invite/* requests with a 401.
     app.use('/api/rbac/invite', rbacModule.invitePublicRoutes);
     app.use('/api/rbac', rbacModule.rbacRoutes);
+    rbacModule.initializeSuspensionScheduler();
     console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
 
     // Load B2B Module (B2B returns: debit notes, credit notes from/to logistics)

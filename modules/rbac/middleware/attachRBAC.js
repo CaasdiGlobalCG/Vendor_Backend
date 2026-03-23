@@ -8,7 +8,7 @@
 //              requirePermission.js (consumes req.rbac downstream)
 // ============================================================
 
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { derivePlatformAccess } from '../config/modules.js';
@@ -123,13 +123,35 @@ export async function attachRBAC(req, res, next) {
       return next();
     }
 
-    // Check if member is suspended
+    // Check if member is suspended. Auto-reactivate when timed suspension has expired.
     if (member.status === 'suspended') {
-      return res.status(403).json({
-        error: 'Account suspended',
-        code: 'RBAC_002',
-        message: 'Your access has been suspended. Contact your organization admin.',
-      });
+      const suspendedUntilRaw = member.suspendedUntil || null;
+      const suspendedUntilMs = suspendedUntilRaw ? Date.parse(suspendedUntilRaw) : NaN;
+      const suspensionExpired = Number.isFinite(suspendedUntilMs) && suspendedUntilMs <= Date.now();
+
+      if (suspensionExpired) {
+        const now = new Date().toISOString();
+        await docClient.send(new UpdateCommand({
+          TableName: TABLES.MEMBERS,
+          Key: { orgId: member.orgId, userId: member.userId },
+          UpdateExpression: 'SET #s = :active, updatedAt = :now, unsuspendedAt = :now, unsuspendedBy = :system, unsuspendReason = :reason',
+          ExpressionAttributeNames: { '#s': 'status' },
+          ExpressionAttributeValues: {
+            ':active': 'active',
+            ':now': now,
+            ':system': 'system_auto_unsuspend',
+            ':reason': 'Suspension duration elapsed',
+          },
+        }));
+        member.status = 'active';
+      } else {
+        return res.status(403).json({
+          error: 'Account suspended',
+          code: 'RBAC_002',
+          message: 'Your access has been suspended. Contact your organization admin.',
+          suspendedUntil: suspendedUntilRaw,
+        });
+      }
     }
 
     // Check if member is removed

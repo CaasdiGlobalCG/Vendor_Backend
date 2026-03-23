@@ -1,6 +1,6 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { getPem } from '../utils/jwksUtils.js';
 import { createSession, getTokenForSession } from '../utils/sessionStore.js';
 import * as DynamoUser from '../models/DynamoUser.js';
@@ -128,7 +128,7 @@ async function getVendorAccessGateByUserId(userId) {
       IndexName: 'UserOrgsIndex',
       KeyConditionExpression: 'userId = :uid',
       ExpressionAttributeValues: { ':uid': userId },
-      ProjectionExpression: 'orgType, #s, roleId, roleName',
+      ProjectionExpression: 'orgId, userId, orgType, #s, roleId, roleName, suspendedUntil, suspensionReason',
       ExpressionAttributeNames: { '#s': 'status' },
       Limit: 20,
     }));
@@ -155,11 +155,82 @@ async function getVendorAccessGateByUserId(userId) {
     const hasRemoved = scoped.some((m) => m.status === 'removed');
     const hasActive = scoped.some((m) => m.status === 'active');
 
+    const expiredSuspensions = scoped.filter((m) => {
+      if (m.status !== 'suspended') return false;
+      const untilMs = m.suspendedUntil ? Date.parse(m.suspendedUntil) : NaN;
+      return Number.isFinite(untilMs) && untilMs <= Date.now();
+    });
+
+    if (expiredSuspensions.length > 0) {
+      const now = new Date().toISOString();
+      for (const member of expiredSuspensions) {
+        if (!member.orgId || !member.userId) continue;
+        try {
+          await docClient.send(new UpdateCommand({
+            TableName: process.env.RBAC_MEMBERS_TABLE || 'rbac_members',
+            Key: { orgId: member.orgId, userId: member.userId },
+            UpdateExpression: 'SET #s = :active, updatedAt = :now, unsuspendedAt = :now, unsuspendedBy = :system, unsuspendReason = :reason',
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: {
+              ':active': 'active',
+              ':now': now,
+              ':system': 'system_auto_unsuspend',
+              ':reason': 'Suspension duration elapsed',
+            },
+          }));
+        } catch (err) {
+          console.warn('[auth] auto-unsuspend failed for member:', err?.message);
+        }
+      }
+      return { allowed: true };
+    }
+
+    const activeSuspensions = scoped.filter((m) => {
+      if (m.status !== 'suspended') return false;
+      const untilMs = m.suspendedUntil ? Date.parse(m.suspendedUntil) : NaN;
+      return !Number.isFinite(untilMs) || untilMs > Date.now();
+    });
+
+    if (activeSuspensions.length > 0 && !hasActive) {
+      const blocked = activeSuspensions
+        .slice()
+        .sort((a, b) => {
+          const aMs = a.suspendedUntil ? Date.parse(a.suspendedUntil) : Number.POSITIVE_INFINITY;
+          const bMs = b.suspendedUntil ? Date.parse(b.suspendedUntil) : Number.POSITIVE_INFINITY;
+          return aMs - bMs;
+        })[0];
+
+      const untilMs = blocked?.suspendedUntil ? Date.parse(blocked.suspendedUntil) : NaN;
+      let periodText = 'until it is manually lifted';
+      if (Number.isFinite(untilMs)) {
+        const remainingMs = Math.max(0, untilMs - Date.now());
+        const totalMinutes = Math.ceil(remainingMs / 60000);
+        const days = Math.floor(totalMinutes / (24 * 60));
+        const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+        const minutes = totalMinutes % 60;
+        const pieces = [];
+        if (days > 0) pieces.push(`${days}d`);
+        if (hours > 0) pieces.push(`${hours}h`);
+        if (minutes > 0 || pieces.length === 0) pieces.push(`${minutes}m`);
+        periodText = `until ${new Date(untilMs).toLocaleString('en-IN')} (${pieces.join(' ')} remaining)`;
+      }
+
+      const reasonText = blocked?.suspensionReason
+        ? ` Reason: ${String(blocked.suspensionReason).trim()}`
+        : '';
+
+      return {
+        allowed: false,
+        code: 'RBAC_002',
+        message: `Your account has been suspended ${periodText}.${reasonText} contact the org administrator.`,
+      };
+    }
+
     if (hasRemoved && !hasActive) {
       return {
         allowed: false,
         code: 'RBAC_001',
-        message: 'Your access has been revoked.',
+        message: 'You have been removed from this organization.',
       };
     }
 

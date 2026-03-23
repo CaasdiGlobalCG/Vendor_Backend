@@ -493,6 +493,173 @@ export async function removeMember(req, res) {
   }
 }
 
+/**
+ * POST /api/rbac/members/:userId/suspend
+ * Suspend a member (optionally until datetime).
+ */
+export async function suspendMember(req, res) {
+  try {
+    const { orgId, userId: callerId, roleLevel: callerLevel } = req.rbac;
+    const { userId: targetUserId } = req.params;
+    const { reason, suspendedUntil } = req.body || {};
+
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ error: 'A reason for suspension is required' });
+    }
+    if (targetUserId === callerId) {
+      return res.status(403).json({ error: 'You cannot suspend yourself' });
+    }
+
+    const memberResult = await docClient.send(new GetCommand({
+      TableName: TABLES.MEMBERS,
+      Key: { orgId, userId: targetUserId },
+    }));
+    const targetMember = memberResult.Item;
+    if (!targetMember || targetMember.status === 'removed') {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    const targetRoleResult = await docClient.send(new GetCommand({
+      TableName: TABLES.ROLES,
+      Key: { orgId, roleId: targetMember.roleId },
+      ProjectionExpression: 'roleLevel',
+    }));
+    const targetRoleLevel = targetRoleResult.Item?.roleLevel ?? 999;
+    if (!canManageUser(callerLevel, targetRoleLevel)) {
+      return res.status(403).json({
+        error: 'Insufficient authority',
+        message: 'You cannot suspend a member with equal or higher authority.',
+      });
+    }
+
+    let normalizedSuspendedUntil = null;
+    if (suspendedUntil) {
+      const parsed = new Date(suspendedUntil);
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ error: 'Invalid suspendedUntil datetime' });
+      }
+      if (parsed.getTime() <= Date.now()) {
+        return res.status(400).json({ error: 'suspendedUntil must be in the future' });
+      }
+      normalizedSuspendedUntil = parsed.toISOString();
+    }
+
+    const now = new Date().toISOString();
+    const trimmedReason = String(reason).trim().slice(0, 500);
+    await docClient.send(new UpdateCommand({
+      TableName: TABLES.MEMBERS,
+      Key: { orgId, userId: targetUserId },
+      UpdateExpression: 'SET #s = :suspended, updatedAt = :now, suspendedAt = :now, suspendedBy = :caller, suspensionReason = :reason, suspendedUntil = :until',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':suspended': 'suspended',
+        ':now': now,
+        ':caller': callerId,
+        ':reason': trimmedReason,
+        ':until': normalizedSuspendedUntil,
+      },
+    }));
+
+    await logAudit(orgId, callerId, 'MEMBER_SUSPENDED', {
+      targetUserId,
+      targetEmail: targetMember.email,
+      reason: trimmedReason,
+      suspendedUntil: normalizedSuspendedUntil,
+    }, req.auth?.email);
+
+    return res.status(200).json({
+      success: true,
+      message: `${targetMember.email} has been suspended`,
+      member: {
+        userId: targetUserId,
+        email: targetMember.email,
+        status: 'suspended',
+        suspendedAt: now,
+        suspendedUntil: normalizedSuspendedUntil,
+      },
+    });
+  } catch (error) {
+    console.error('[RBAC] suspendMember error:', error);
+    return res.status(500).json({ error: 'Failed to suspend member' });
+  }
+}
+
+/**
+ * POST /api/rbac/members/:userId/unsuspend
+ * Unsuspend a suspended member.
+ */
+export async function unsuspendMember(req, res) {
+  try {
+    const { orgId, userId: callerId, roleLevel: callerLevel } = req.rbac;
+    const { userId: targetUserId } = req.params;
+    const { reason } = req.body || {};
+
+    if (targetUserId === callerId) {
+      return res.status(403).json({ error: 'You cannot unsuspend yourself' });
+    }
+
+    const memberResult = await docClient.send(new GetCommand({
+      TableName: TABLES.MEMBERS,
+      Key: { orgId, userId: targetUserId },
+    }));
+    const targetMember = memberResult.Item;
+    if (!targetMember || targetMember.status === 'removed') {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    if (targetMember.status !== 'suspended') {
+      return res.status(400).json({ error: 'Member is not suspended' });
+    }
+
+    const targetRoleResult = await docClient.send(new GetCommand({
+      TableName: TABLES.ROLES,
+      Key: { orgId, roleId: targetMember.roleId },
+      ProjectionExpression: 'roleLevel',
+    }));
+    const targetRoleLevel = targetRoleResult.Item?.roleLevel ?? 999;
+    if (!canManageUser(callerLevel, targetRoleLevel)) {
+      return res.status(403).json({
+        error: 'Insufficient authority',
+        message: 'You cannot unsuspend a member with equal or higher authority.',
+      });
+    }
+
+    const now = new Date().toISOString();
+    const unsuspendReason = reason ? String(reason).trim().slice(0, 500) : null;
+    await docClient.send(new UpdateCommand({
+      TableName: TABLES.MEMBERS,
+      Key: { orgId, userId: targetUserId },
+      UpdateExpression: 'SET #s = :active, updatedAt = :now, unsuspendedAt = :now, unsuspendedBy = :caller, unsuspendReason = :reason',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':active': 'active',
+        ':now': now,
+        ':caller': callerId,
+        ':reason': unsuspendReason,
+      },
+    }));
+
+    await logAudit(orgId, callerId, 'MEMBER_UNSUSPENDED', {
+      targetUserId,
+      targetEmail: targetMember.email,
+      reason: unsuspendReason,
+    }, req.auth?.email);
+
+    return res.status(200).json({
+      success: true,
+      message: `${targetMember.email} has been reactivated`,
+      member: {
+        userId: targetUserId,
+        email: targetMember.email,
+        status: 'active',
+        unsuspendedAt: now,
+      },
+    });
+  } catch (error) {
+    console.error('[RBAC] unsuspendMember error:', error);
+    return res.status(500).json({ error: 'Failed to unsuspend member' });
+  }
+}
+
 // ──────────────────────────────────────
 // HELPERS
 // ──────────────────────────────────────

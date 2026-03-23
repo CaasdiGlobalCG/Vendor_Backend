@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import { getMyRBAC } from '../controllers/meController.js';
-import { listMembers, inviteMember, changeMemberRole, removeMember } from '../controllers/membersController.js';
+import { listMembers, inviteMember, changeMemberRole, removeMember, suspendMember, unsuspendMember } from '../controllers/membersController.js';
 import { listRoles, getRoleDetails, createRole, updateRole, deleteRole } from '../controllers/rolesController.js';
 import { listInvitations, cancelInvitation } from '../controllers/invitationsController.js';
 import { getAuditLogs } from '../controllers/auditLogController.js';
@@ -52,6 +52,12 @@ router.patch('/members/:userId/role', requirePermission('user_management', 'edit
 
 /** DELETE /api/rbac/members/:userId — remove a member */
 router.delete('/members/:userId', requirePermission('user_management', 'edit'), removeMember);
+
+/** POST /api/rbac/members/:userId/suspend — suspend a member */
+router.post('/members/:userId/suspend', requirePermission('user_management', 'edit'), suspendMember);
+
+/** POST /api/rbac/members/:userId/unsuspend — unsuspend a member */
+router.post('/members/:userId/unsuspend', requirePermission('user_management', 'edit'), unsuspendMember);
 
 // ──────────────────────────────────────
 // Phase 2.5 — Role Management (CRUD)
