@@ -157,6 +157,41 @@ async function testUnauthAccess() {
   } else {
     skip('1.8 DELETE member without auth', 'Server unreachable');
   }
+
+  // 1.9 — PATCH member access scopes without auth
+  const patchScopesRes = await safeFetch(`${VENDOR_BASE}/api/rbac/members/fake-user/access-scopes`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectIds: ['p1'], workspaceIds: ['w1'] }),
+  });
+  if (patchScopesRes) {
+    assert('1.9 PATCH member access scopes without auth → 401',
+      patchScopesRes.status === 401, `Got ${patchScopesRes.status}`);
+  } else {
+    skip('1.9 PATCH member access scopes without auth', 'Server unreachable');
+  }
+
+  // 1.10 — GET project member access without auth
+  const projectMemberAccessRes = await safeFetch(`${VENDOR_BASE}/api/projects/fake-project/member-access`);
+  if (projectMemberAccessRes) {
+    assert('1.10 GET project member access without auth → 401',
+      projectMemberAccessRes.status === 401, `Got ${projectMemberAccessRes.status}`);
+  } else {
+    skip('1.10 GET project member access without auth', 'Server unreachable');
+  }
+
+  // 1.11 — PATCH workspace member access without auth
+  const workspaceMemberAccessRes = await safeFetch(`${VENDOR_BASE}/api/workspaces/fake-workspace/member-access`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ addUserIds: ['u1'], removeUserIds: [] }),
+  });
+  if (workspaceMemberAccessRes) {
+    assert('1.11 PATCH workspace member access without auth → 401',
+      workspaceMemberAccessRes.status === 401, `Got ${workspaceMemberAccessRes.status}`);
+  } else {
+    skip('1.11 PATCH workspace member access without auth', 'Server unreachable');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

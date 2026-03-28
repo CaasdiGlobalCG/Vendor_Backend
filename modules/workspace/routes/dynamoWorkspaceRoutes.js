@@ -2,60 +2,75 @@ import express from 'express';
 import * as dynamoWorkspaceController from '../controllers/dynamoWorkspaceController.js';
 import { getWorkspaceAccessStatus, verifyWorkspaceAccess } from '../controllers/workspaceAccessController.js';
 import { inviteCASMembersToWorkspace } from '../../pm/controllers/pmProjectController.js';
+import { getWorkspaceMemberAccess, updateWorkspaceMemberAccess } from '../../rbac/controllers/resourceAssignmentController.js';
 import { getWorkspacePurchaseOrders } from '../controllers/workspacePurchaseOrdersController.js';
+import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
+import { attachVendorId } from '../../../middleware/attachVendorId.js';
+import { attachRBAC } from '../../rbac/middleware/attachRBAC.js';
+import { requirePermission } from '../../rbac/middleware/requirePermission.js';
 
 const router = express.Router();
 
+router.use(authenticateCognitoJwt);
+router.use(attachVendorId);
+router.use(attachRBAC);
+
 // Create a new workspace
-router.post('/workspaces', dynamoWorkspaceController.createWorkspace);
+router.post('/workspaces', requirePermission('workspace', 'create'), dynamoWorkspaceController.createWorkspace);
 
 // Get workspace by ID
-router.get('/workspaces/:id', dynamoWorkspaceController.getWorkspaceById);
+router.get('/workspaces/:id', requirePermission('workspace', 'view'), dynamoWorkspaceController.getWorkspaceById);
+
+// Get direct member assignment state for a workspace
+router.get('/workspaces/:id/member-access', requirePermission('workspace', 'view'), getWorkspaceMemberAccess);
+
+// Add/remove direct member access for a workspace
+router.patch('/workspaces/:id/member-access', requirePermission('workspace', 'edit'), updateWorkspaceMemberAccess);
 
 // Get workspace by lead ID
-router.get('/workspaces/lead/:leadId', dynamoWorkspaceController.getWorkspaceByLeadId);
+router.get('/workspaces/lead/:leadId', requirePermission('workspace', 'view'), dynamoWorkspaceController.getWorkspaceByLeadId);
 
 // Get workspace by project ID
-router.get('/workspaces/project/:projectId', dynamoWorkspaceController.getWorkspaceByProjectId);
+router.get('/workspaces/project/:projectId', requirePermission('workspace', 'view'), dynamoWorkspaceController.getWorkspaceByProjectId);
 
 // Get workspaces by vendor ID
-router.get('/workspaces/vendor/:vendorId', dynamoWorkspaceController.getWorkspacesByVendorId);
+router.get('/workspaces/vendor/:vendorId', requirePermission('workspace', 'view'), dynamoWorkspaceController.getWorkspacesByVendorId);
 
 // Get workspace collaborators with details and activity
-router.get('/workspaces/:workspaceId/collaborators', dynamoWorkspaceController.getWorkspaceCollaborators);
+router.get('/workspaces/:workspaceId/collaborators', requirePermission('workspace', 'view'), dynamoWorkspaceController.getWorkspaceCollaborators);
 
 // Update workspace permissions
-router.put('/workspaces/:workspaceId/permissions', dynamoWorkspaceController.updateWorkspacePermissions);
+router.put('/workspaces/:workspaceId/permissions', requirePermission('workspace', 'edit'), dynamoWorkspaceController.updateWorkspacePermissions);
 
 // Request project completion (vendor submits, PM and Client approvals trigger status change)
-router.post('/workspaces/:workspaceId/request-completion', dynamoWorkspaceController.requestProjectCompletion);
+router.post('/workspaces/:workspaceId/request-completion', requirePermission('workspace', 'edit'), dynamoWorkspaceController.requestProjectCompletion);
 
 // Access status and verification
-router.get('/workspace-access/status/:workspaceId', getWorkspaceAccessStatus);
-router.get('/workspace-access/verify/:workspaceId', verifyWorkspaceAccess);
+router.get('/workspace-access/status/:workspaceId', requirePermission('workspace', 'view'), getWorkspaceAccessStatus);
+router.get('/workspace-access/verify/:workspaceId', requirePermission('workspace', 'view'), verifyWorkspaceAccess);
 
 // Purchase orders for a vendor (fallback route under dynamo workspace router)
 // This ensures /api/workspace/purchase-orders works even if workspaceRoutes
 // are not mounted in some environments.
-router.get('/workspace/purchase-orders', getWorkspacePurchaseOrders);
+router.get('/workspace/purchase-orders', requirePermission('workspace', 'view'), getWorkspacePurchaseOrders);
 
 // Create or get workspace for a lead/project
-router.post('/workspaces/lead/:leadId/create-or-get', dynamoWorkspaceController.createOrGetWorkspaceForLead);
+router.post('/workspaces/lead/:leadId/create-or-get', requirePermission('workspace', 'create'), dynamoWorkspaceController.createOrGetWorkspaceForLead);
 
 // Update a workspace
-router.put('/workspaces/:id', dynamoWorkspaceController.updateWorkspace);
+router.put('/workspaces/:id', requirePermission('workspace', 'edit'), dynamoWorkspaceController.updateWorkspace);
 
 // Save workspace canvas data (specialized endpoint for canvas state)
-router.put('/workspaces/:id/canvas', dynamoWorkspaceController.saveWorkspaceCanvas);
+router.put('/workspaces/:id/canvas', requirePermission('workspace', 'edit'), dynamoWorkspaceController.saveWorkspaceCanvas);
 
 // Share workspace with other users
-router.put('/workspaces/:id/share', dynamoWorkspaceController.shareWorkspace);
+router.put('/workspaces/:id/share', requirePermission('workspace', 'edit'), dynamoWorkspaceController.shareWorkspace);
 
 // Invite CAS members to workspace
-router.post('/workspaces/:workspaceId/invite-cas', inviteCASMembersToWorkspace);
+router.post('/workspaces/:workspaceId/invite-cas', requirePermission('workspace', 'edit'), inviteCASMembersToWorkspace);
 
 // Get workspaces where user is a CAS collaborator
-router.get('/cas-member/:userId/workspaces', async (req, res) => {
+router.get('/cas-member/:userId/workspaces', requirePermission('workspace', 'view'), async (req, res) => {
   try {
     const { userId } = req.params;
     
@@ -120,17 +135,19 @@ router.get('/cas-member/:userId/workspaces', async (req, res) => {
 });
 
 // Task management within workspace
-router.post('/workspaces/:id/tasks', dynamoWorkspaceController.addTaskToWorkspace);
-router.post('/workspaces/:id/tasks/:taskId/subtasks', dynamoWorkspaceController.addSubtaskToTask);
+
+router.post('/workspaces/:id/tasks', requirePermission('workspace', 'edit'), dynamoWorkspaceController.addTaskToWorkspace);
+router.post('/workspaces/:id/tasks/:taskId/subtasks', requirePermission('workspace', 'edit'), dynamoWorkspaceController.addSubtaskToTask);
 router.patch('/workspaces/:id/tasks/:taskId', dynamoWorkspaceController.updateTaskInWorkspace);
 router.patch('/workspaces/:id/tasks/:taskId/subtasks/:subtaskId', dynamoWorkspaceController.updateSubtaskInTask);
-router.put('/workspaces/:id/tasks/:taskId/subtasks/:subtaskId/canvas', dynamoWorkspaceController.updateSubtaskCanvas);
+router.put('/workspaces/:id/tasks/:taskId/subtasks/:subtaskId/canvas', requirePermission('workspace', 'edit'), dynamoWorkspaceController.updateSubtaskCanvas);
+
 
 // Delete a workspace
-router.delete('/workspaces/:id', dynamoWorkspaceController.deleteWorkspace);
+router.delete('/workspaces/:id', requirePermission('workspace', 'delete'), dynamoWorkspaceController.deleteWorkspace);
 
 // ── Comment @mention notifications ──
-router.post('/workspace/comments/mention', async (req, res) => {
+router.post('/workspace/comments/mention', requirePermission('workspace', 'view'), async (req, res) => {
   try {
     const { workspaceId, nodeId, elementName, commentText, authorName, mentionedUserIds } = req.body;
     if (!mentionedUserIds || mentionedUserIds.length === 0) {

@@ -216,7 +216,7 @@ async function loadModules() {
     app.use('/api', postServiceNotificationRoutes);
     console.log('✅ Post Services Module loaded');
 
-    // Load RBAC Module (Phase 1 — permissive mode)
+    // Load RBAC Module (strict enforcement mode)
     console.log('🔄 Loading RBAC Module...');
     const rbacModule = await import('./modules/rbac/index.js');
     // Public invite routes FIRST — no auth required (invitee has no account yet).
@@ -225,7 +225,7 @@ async function loadModules() {
     app.use('/api/rbac/invite', rbacModule.invitePublicRoutes);
     app.use('/api/rbac', rbacModule.rbacRoutes);
     rbacModule.initializeSuspensionScheduler();
-    console.log('✅ RBAC Module loaded (Phase 1 — permissive mode)');
+    console.log('✅ RBAC Module loaded (strict enforcement mode)');
 
     // Load B2B Module (B2B returns: debit notes, credit notes from/to logistics)
     console.log('🔄 Loading B2B Module...');

@@ -27,10 +27,8 @@ function buildMeta(req) {
  *   3. 'module:action' → allow (exact match)
  *   4. Otherwise → 403
  *
- * Phase 4 behavior (ENFORCEMENT MODE):
- *   If req.rbac is missing:
- *     - Org owner (_fallback: true) → allow (they own the org)
- *     - No RBAC context at all → block with 403
+ * Enforcement behavior:
+ *   If req.rbac is missing, block with 403.
  *
  * @param {string} module - Module code (e.g., 'products', 'orders')
  * @param {string} action - Action verb (e.g., 'view', 'create', 'edit', 'delete')
@@ -38,7 +36,7 @@ function buildMeta(req) {
  */
 export function requirePermission(module, action) {
   return (req, res, next) => {
-    // No RBAC context — check if this is an org owner (fallback Super Admin)
+    // No RBAC context
     if (!req.rbac) {
       return res.status(403).json({
         error: 'Forbidden',
@@ -46,11 +44,6 @@ export function requirePermission(module, action) {
         message: 'Access denied — no RBAC context.',
         required: `${module}:${action}`,
       });
-    }
-
-    // Org owner fallback — allow (they are implicit Super Admin)
-    if (req.rbac._fallback && req.rbac.isSuperAdmin) {
-      return next();
     }
 
     // Check permission using the utility (handles wildcards and manage grants)
@@ -95,11 +88,6 @@ export function requireSuperAdmin() {
         code: 'RBAC_003',
         message: 'Access denied — no RBAC context.',
       });
-    }
-
-    // Org owner fallback — always Super Admin
-    if (req.rbac._fallback && req.rbac.isSuperAdmin) {
-      return next();
     }
 
     if (req.rbac.isSuperAdmin) {

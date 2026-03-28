@@ -13,6 +13,7 @@ import { canManageUser } from '../utils/permission.utils.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
 import { derivePlatformAccess } from '../config/modules.js';
 import { sendInvitationEmail, sendRemovalEmail } from '../services/emailService.js';
+import { sanitizeScopeIds, resolveAccessScopesForRole } from '../utils/scopeAccess.utils.js';
 import crypto from 'crypto';
 
 /**
@@ -50,7 +51,13 @@ export async function listMembers(req, res) {
     }
 
     const result = await docClient.send(new QueryCommand(params));
-    const members = (result.Items || []).filter((m) => m.status !== 'removed');
+    const members = (result.Items || [])
+      .filter((m) => m.status !== 'removed')
+      .map((m) => ({
+        ...m,
+        projectAccess: Array.isArray(m.projectAccess) ? m.projectAccess : [],
+        workspaceAccess: Array.isArray(m.workspaceAccess) ? m.workspaceAccess : [],
+      }));
 
     // Optional: client-side search filter on email
     const search = req.query.search?.toLowerCase();
@@ -85,7 +92,7 @@ export async function listMembers(req, res) {
 export async function inviteMember(req, res) {
   try {
     const { orgId, orgType, userId: callerId, roleLevel: callerLevel } = req.rbac;
-    const { email, roleId, message, permissionOverrides } = req.body;
+    const { email, roleId, message, permissionOverrides, accessScopes } = req.body;
 
     // ── Validation ──
     if (!email || !roleId) {
@@ -103,6 +110,7 @@ export async function inviteMember(req, res) {
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
+
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
@@ -119,6 +127,12 @@ export async function inviteMember(req, res) {
     if (!targetRole) {
       return res.status(400).json({ error: `Role '${roleId}' not found in this organization` });
     }
+
+    const {
+      projectAccess,
+      workspaceAccess,
+      forced: forcedScopeByRole,
+    } = resolveAccessScopesForRole(targetRole.roleId, accessScopes?.projectIds, accessScopes?.workspaceIds);
 
     // ── Hierarchy check: can't assign a role at your own level or higher ──
     if (!canManageUser(callerLevel, targetRole.roleLevel)) {
@@ -198,6 +212,8 @@ export async function inviteMember(req, res) {
       status: 'pending',
       message: message || '',
       platformAccess: autoPlatformAccess,
+      projectAccess,
+      workspaceAccess,
       ...(validatedOverrides && { permissionOverrides: validatedOverrides }),
       createdAt: now,
       expiresAt,
@@ -219,6 +235,8 @@ export async function inviteMember(req, res) {
       inviteId,
       invitedBy: callerId,
       platformAccess: autoPlatformAccess,
+      projectAccess,
+      workspaceAccess,
       ...(validatedOverrides && { permissionOverrides: validatedOverrides }),
       joinedAt: now,
       updatedAt: now,
@@ -270,6 +288,9 @@ export async function inviteMember(req, res) {
         email: invitation.email,
         roleId: invitation.roleId,
         roleName: invitation.roleName,
+        projectAccess,
+        workspaceAccess,
+        forcedScopeByRole,
         status: invitation.status,
         expiresAt: invitation.expiresAt,
       },
@@ -354,15 +375,23 @@ export async function changeMemberRole(req, res) {
       });
     }
 
+    const scopedByRole = resolveAccessScopesForRole(
+      newRoleId,
+      targetMember.projectAccess,
+      targetMember.workspaceAccess
+    );
+
     // ── Update ──
     const now = new Date().toISOString();
     await docClient.send(new UpdateCommand({
       TableName: TABLES.MEMBERS,
       Key: { orgId, userId: targetUserId },
-      UpdateExpression: 'SET roleId = :roleId, roleName = :roleName, updatedAt = :now',
+      UpdateExpression: 'SET roleId = :roleId, roleName = :roleName, projectAccess = :projectAccess, workspaceAccess = :workspaceAccess, updatedAt = :now',
       ExpressionAttributeValues: {
         ':roleId': newRoleId,
         ':roleName': newRole.roleName,
+        ':projectAccess': scopedByRole.projectAccess,
+        ':workspaceAccess': scopedByRole.workspaceAccess,
         ':now': now,
       },
     }));
@@ -380,8 +409,11 @@ export async function changeMemberRole(req, res) {
         email: targetMember.email,
         roleId: newRoleId,
         roleName: newRole.roleName,
+        projectAccess: scopedByRole.projectAccess,
+        workspaceAccess: scopedByRole.workspaceAccess,
         updatedAt: now,
       },
+      forcedScopeByRole: scopedByRole.forced,
       message: `Role updated to ${newRole.roleName}`,
     });
   } catch (error) {
@@ -657,6 +689,89 @@ export async function unsuspendMember(req, res) {
   } catch (error) {
     console.error('[RBAC] unsuspendMember error:', error);
     return res.status(500).json({ error: 'Failed to unsuspend member' });
+  }
+}
+
+/**
+ * PATCH /api/rbac/members/:userId/access-scopes
+ * Update project/workspace scopes for an existing member.
+ * Requires: user_management:edit permission.
+ *
+ * Body: { projectIds?: string[], workspaceIds?: string[] }
+ */
+export async function updateMemberAccessScopes(req, res) {
+  try {
+    const { orgId, userId: callerId, roleLevel: callerLevel } = req.rbac;
+    const { userId: targetUserId } = req.params;
+    const requestedProjectIds = sanitizeScopeIds(req.body?.projectIds);
+    const requestedWorkspaceIds = sanitizeScopeIds(req.body?.workspaceIds);
+
+    if (targetUserId === callerId) {
+      return res.status(403).json({ error: 'You cannot modify your own access scopes' });
+    }
+
+    const memberResult = await docClient.send(new GetCommand({
+      TableName: TABLES.MEMBERS,
+      Key: { orgId, userId: targetUserId },
+    }));
+
+    const targetMember = memberResult.Item;
+    if (!targetMember || targetMember.status === 'removed') {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    const targetRoleResult = await docClient.send(new GetCommand({
+      TableName: TABLES.ROLES,
+      Key: { orgId, roleId: targetMember.roleId },
+      ProjectionExpression: 'roleLevel',
+    }));
+    const targetRoleLevel = targetRoleResult.Item?.roleLevel ?? 999;
+
+    if (!canManageUser(callerLevel, targetRoleLevel)) {
+      return res.status(403).json({
+        error: 'Insufficient authority',
+        message: 'You cannot manage a member with equal or higher authority.',
+      });
+    }
+
+    const {
+      projectAccess: projectIds,
+      workspaceAccess: workspaceIds,
+      forced: forcedScopeByRole,
+    } = resolveAccessScopesForRole(targetMember.roleId, requestedProjectIds, requestedWorkspaceIds);
+
+    const now = new Date().toISOString();
+    await docClient.send(new UpdateCommand({
+      TableName: TABLES.MEMBERS,
+      Key: { orgId, userId: targetUserId },
+      UpdateExpression: 'SET projectAccess = :projectAccess, workspaceAccess = :workspaceAccess, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':projectAccess': projectIds,
+        ':workspaceAccess': workspaceIds,
+        ':now': now,
+      },
+    }));
+
+    await logAudit(orgId, callerId, 'MEMBER_ACCESS_SCOPES_UPDATED', {
+      targetUserId,
+      targetEmail: targetMember.email,
+      projectAccess: projectIds,
+      workspaceAccess: workspaceIds,
+    }, req.auth?.email);
+
+    return res.status(200).json({
+      success: true,
+      member: {
+        userId: targetUserId,
+        projectAccess: projectIds,
+        workspaceAccess: workspaceIds,
+        updatedAt: now,
+      },
+      forcedScopeByRole,
+    });
+  } catch (error) {
+    console.error('[RBAC] updateMemberAccessScopes error:', error);
+    return res.status(500).json({ error: 'Failed to update member access scopes' });
   }
 }
 

@@ -1,6 +1,7 @@
 import * as DynamoWorkspace from '../models/DynamoWorkspace.js';
 import ActivityTracker from '../../../utils/activityTracker.js';
 import { dynamoDB } from '../../../config/aws.js';
+import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
 
 // Create a new workspace
 export const createWorkspace = async (req, res) => {
@@ -25,6 +26,10 @@ export const getWorkspaceById = async (req, res) => {
     
     if (!workspace) {
       return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    if (!canAccessWorkspace(req.rbac, workspace.workspaceId || id, workspace.projectId)) {
+      return res.status(403).json({ message: 'Access denied for this workspace' });
     }
     
     res.status(200).json(workspace);
@@ -60,6 +65,10 @@ export const getWorkspaceByProjectId = async (req, res) => {
     if (!workspace) {
       return res.status(404).json({ message: 'Workspace not found for this project' });
     }
+
+    if (!canAccessProject(req.rbac, projectId) || !canAccessWorkspace(req.rbac, workspace.workspaceId, projectId)) {
+      return res.status(403).json({ message: 'Access denied for this project workspace' });
+    }
     // Normalize status fields for UI compatibility
     const statusRaw = (typeof workspace.status === 'string' ? workspace.status : '').toLowerCase();
     const projectStatusRaw = (typeof workspace.project_status === 'string' ? workspace.project_status : '').toLowerCase();
@@ -82,8 +91,15 @@ export const getWorkspaceByProjectId = async (req, res) => {
 export const getWorkspacesByVendorId = async (req, res) => {
   try {
     const { vendorId } = req.params;
+    if (req.vendorId && String(req.vendorId) !== String(vendorId) && !req.rbac?.isSuperAdmin) {
+      return res.status(403).json({ message: 'Cannot access another vendor\'s workspaces' });
+    }
+
     const workspaces = await DynamoWorkspace.getWorkspacesByVendorId(vendorId);
-    res.status(200).json(workspaces);
+    const scopedWorkspaces = workspaces.filter((workspace) =>
+      canAccessWorkspace(req.rbac, workspace.workspaceId || workspace.id, workspace.projectId)
+    );
+    res.status(200).json(scopedWorkspaces);
   } catch (error) {
     console.error('Error getting workspaces by vendor ID:', error);
     res.status(500).json({ message: 'Failed to get workspaces', error: error.message });
@@ -100,6 +116,10 @@ export const createOrGetWorkspaceForLead = async (req, res) => {
       return res.status(400).json({ message: 'Vendor ID is required' });
     }
     
+    if (!canAccessProject(req.rbac, projectId)) {
+      return res.status(403).json({ message: 'Access denied for this project' });
+    }
+
     const workspace = await DynamoWorkspace.createOrGetWorkspaceForLead(leadId, vendorId, projectId);
     res.status(200).json(workspace);
   } catch (error) {
@@ -117,6 +137,10 @@ export const updateWorkspace = async (req, res) => {
     const existingWorkspace = await DynamoWorkspace.getWorkspaceById(id);
     if (!existingWorkspace) {
       return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    if (!canAccessWorkspace(req.rbac, existingWorkspace.workspaceId || id, existingWorkspace.projectId)) {
+      return res.status(403).json({ message: 'Access denied for this workspace' });
     }
 
     // If workspace is completed, prevent vendors from making changes
@@ -184,6 +208,10 @@ export const saveWorkspaceCanvas = async (req, res) => {
     const existingWorkspace = await DynamoWorkspace.getWorkspaceById(id);
     if (!existingWorkspace) {
       return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    if (!canAccessWorkspace(req.rbac, existingWorkspace.workspaceId || id, existingWorkspace.projectId)) {
+      return res.status(403).json({ message: 'Access denied for this workspace' });
     }
 
     // Prevent vendors from modifying canvas on completed projects

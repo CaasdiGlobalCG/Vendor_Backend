@@ -2,7 +2,7 @@
 
 ## Overview
 Role-Based Access Control (RBAC) module for the Vendor Backend.
-Phase 1 operates in **permissive mode** — logs permission mismatches but doesn't block requests.
+RBAC operates in **strict enforcement mode** — users without membership or permissions are denied.
 
 ## Directory Structure
 ```
@@ -20,16 +20,18 @@ modules/rbac/
 ├── controllers/
 │   ├── meController.js         ← GET /api/rbac/me handler
 │   ├── membersController.js    ← listMembers, inviteMember, changeMemberRole, removeMember
+│   ├── resourceAssignmentController.js ← direct project/workspace member access APIs
 │   ├── rolesController.js      ← listRoles with canAssign flag
 │   └── invitationsController.js ← listInvitations, cancelInvitation
 ├── routes/
-│   └── rbacRoutes.js           ← Express router (Phase 1: /me, Phase 2: CRUD)
+│   └── rbacRoutes.js           ← Express router (Phase 1: /me, Phase 2: CRUD + scope updates)
 ├── scripts/
 │   ├── createTables.js         ← Creates 6 DynamoDB tables (one-time)
 │   ├── seedDefaults.js         ← Seeds plans + default roles per org
 │   └── backfillSuperAdmins.js  ← Backfills existing vendors/clients as Super Admins
 └── utils/
-    └── permission.utils.js     ← Pure permission-checking helpers
+  ├── permission.utils.js     ← Pure permission-checking helpers
+  └── scopeAccess.utils.js    ← Project/workspace scope normalization + checks
 ```
 
 ## Middleware Chain
@@ -43,10 +45,10 @@ authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 - `attachRBAC`: Reads `req.vendorId` (sync `resolveOrg()`) → GetItem `rbac_members` → GetItem `rbac_roles` → sets `req.rbac`
 
 ### attachRBAC Known Gotchas (all fixed, documented for future reference)
-1. **Reserved keyword `permissions`**: Must alias as `#perms` in `ProjectionExpression` for `rbac_roles` GetItem. Without alias → `ValidationException` → catch block → Super Admin Error Fallback.
+1. **Reserved keyword `permissions`**: Must alias as `#perms` in `ProjectionExpression` for `rbac_roles` GetItem. Without alias → `ValidationException`.
 2. **Credential provider in db.js**: Must use default provider chain (`new DynamoDBClient({ region })`), NOT explicit `credentials: { accessKeyId, secretAccessKey }`. Explicit credentials freeze at ESM module-load time → `undefined` if module loaded before `dotenv.config()`.
 3. **Permissions type safety**: `role.permissions` could be a DynamoDB Set (SS) instead of List (L). Code defensively handles both Array and Set.
-4. **Phase 1 permissive mode**: If no membership found OR any error occurs, grants Super Admin fallback with `_fallback: true`. Will be tightened in Phase 4.
+4. **Strict membership enforcement**: If no membership is found, `attachRBAC` returns 403 and does not auto-create or auto-promote users.
 
 ## Team Member Login Flow
 - Team members share the org's vendorId/clientId — no separate vendor/client record.
@@ -64,6 +66,7 @@ authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 | GET | `/api/rbac/members` | List org members | user_management:view |
 | POST | `/api/rbac/members/invite` | Invite member by email | user_management:create |
 | PATCH | `/api/rbac/members/:userId/role` | Change member's role | user_management:edit |
+| PATCH | `/api/rbac/members/:userId/access-scopes` | Update member project/workspace scopes | user_management:edit |
 | DELETE | `/api/rbac/members/:userId` | Remove member (soft) | user_management:edit |
 | GET | `/api/rbac/roles` | List roles + canAssign | user_management:view |
 | GET | `/api/rbac/invitations` | List invitations | user_management:view |
@@ -98,9 +101,40 @@ RBAC now protects vendor lead operations in `modules/vendor/routes/vendorLeadRou
   permissions,    // ['*:*'] or ['products:view', 'orders:manage', ...]
   permissionSet,  // Set for O(1) lookups
   isSuperAdmin,   // boolean
-  _fallback,      // true if granted via Phase 1 permissive fallback
+  accessScopes,   // { projectIds, workspaceIds, allowAllProjects, allowAllWorkspaces }
+  _fallback,      // always false in strict enforcement mode
 }
 ```
+
+## Scoped Access Model (Projects and Workspaces)
+- Member row (`rbac_members`) may include:
+  - `projectAccess: string[]` (supports `['*']` for full project scope)
+  - `workspaceAccess: string[]` (supports `['*']` for full workspace scope)
+- `attachRBAC` normalizes these into `req.rbac.accessScopes`.
+- Policy hardening:
+  - `super_admin` is always treated as wildcard permission `*:*`.
+  - `super_admin` is always treated as wildcard project/workspace scope.
+  - `admin` and `super_admin` scopes are enforced as wildcard in member scope write flows.
+- Access rules:
+  - Super Admin always passes.
+  - No scope arrays means backward-compatible access (no restriction).
+  - If workspace scope is explicitly constrained, empty project scope does NOT imply all projects.
+  - Non-empty scope arrays restrict visibility to listed IDs.
+  - Workspace access can come from direct workspace scope or inherited project scope.
+
+## Enforced Route Coverage (Projects/Workspaces)
+- `modules/pm/routes/dynamoProjectRoutes.js` now enforces:
+  - `authenticateCognitoJwt -> attachVendorId -> attachRBAC -> requirePermission('projects', ...)`
+  - Direct assignment APIs:
+    - `GET /api/projects/:id/member-access`
+    - `PATCH /api/projects/:id/member-access`
+- `modules/workspace/routes/dynamoWorkspaceRoutes.js` now enforces:
+  - `authenticateCognitoJwt -> attachVendorId -> attachRBAC -> requirePermission('workspace', ...)`
+  - Direct assignment APIs:
+    - `GET /api/workspaces/:id/member-access`
+    - `PATCH /api/workspaces/:id/member-access`
+- `modules/workspace/routes/workspaceAccessRoutes.js` now enforces:
+  - `authenticateCognitoJwt -> attachVendorId -> attachRBAC -> requirePermission('workspace', 'view')`
 
 ## DynamoDB Tables
 | Table | PK | SK | Key GSIs |
@@ -126,7 +160,18 @@ RBAC now protects vendor lead operations in `modules/vendor/routes/vendorLeadRou
 node modules/rbac/scripts/createTables.js       # Create DynamoDB tables
 node modules/rbac/scripts/seedDefaults.js        # Seed plans + roles
 node modules/rbac/scripts/backfillSuperAdmins.js # Migrate existing accounts
+node modules/rbac/scripts/backfillMemberScopes.js # Backfill missing project/workspace scopes
 ```
+
+### Scope Backfill Script
+- `backfillMemberScopes.js` fills missing `projectAccess` and `workspaceAccess` with `['*']` for legacy members.
+- Default mode is dry-run.
+- Set `BACKFILL_DRY_RUN=false` to write updates.
+
+## Tests
+- Existing unit tests: `modules/rbac/tests/test-rbac-units.js`
+- Existing API tests: `modules/rbac/tests/test-rbac-api.js`
+- New scoped-access unit tests: `modules/rbac/tests/test-rbac-scope-units.js`
 
 ## Timed Suspension Auto-Reactivation
 - RBAC module now starts a background scheduler at module bootstrap (`initializeSuspensionScheduler`).
@@ -139,7 +184,7 @@ node modules/rbac/scripts/backfillSuperAdmins.js # Migrate existing accounts
   - `RBAC_SUSPENSION_SWEEP_BATCH_SIZE` (default `100`)
 
 ## Phase Roadmap
-- **Phase 1** (done): Permissive mode, backfill, GET /me
+- **Phase 1** (done): Initial rollout, backfill, GET /me
 - **Phase 2** (done): Team member CRUD, invitations, role management
 - **Phase 2.5A** (done): Role CRUD API + Frontend role editor
 - **Phase 2.5B** (done): Frontend team management UI (TeamPage.jsx)
@@ -147,4 +192,4 @@ node modules/rbac/scripts/backfillSuperAdmins.js # Migrate existing accounts
 - **Phase 2.5C** (done): Email invitation + acceptance flow (InviteAcceptPage)
 - **Team Member Login Flow** (done): Shared-org model, middleware fallbacks, frontend routing
 - **Phase 3**: Audit logging, custom roles (planned)
-- **Phase 4**: Full enforcement (remove permissive fallbacks)
+- **Phase 4** (done): Full enforcement (permissive fallbacks removed)

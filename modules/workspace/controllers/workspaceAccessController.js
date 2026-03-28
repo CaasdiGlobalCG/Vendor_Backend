@@ -2,6 +2,7 @@ import AWS from 'aws-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import { dynamoDB } from '../../../config/aws.js';
 import * as DynamoWorkspace from '../models/DynamoWorkspace.js';
+import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
 
 const LEAD_INVITATIONS_TABLE = 'lead_invitations_table';
 const PM_PROJECTS_TABLE = 'pm_projects_table';
@@ -25,6 +26,10 @@ export const getWorkspaceAccessStatus = async (req, res) => {
         success: false,
         error: 'Workspace not found'
       });
+    }
+
+    if (!canAccessWorkspace(req.rbac, workspaceItem.workspaceId || workspaceId, workspaceItem.projectId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this workspace' });
     }
 
     const workspaceData = workspaceItem;
@@ -67,6 +72,10 @@ export const verifyWorkspaceAccess = async (req, res) => {
         success: false,
         error: 'Workspace not found'
       });
+    }
+
+    if (!canAccessWorkspace(req.rbac, workspace.workspaceId || workspaceId, workspace.projectId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this workspace' });
     }
 
     const workspaceData = workspace;
@@ -204,6 +213,14 @@ export const createOrGetCollaborativeWorkspace = async (req, res) => {
   try {
     const { projectId, pmId, vendorId, leadId, pmApproved = false } = req.body;
 
+    if (req.vendorId && String(req.vendorId) !== String(vendorId) && !req.rbac?.isSuperAdmin) {
+      return res.status(403).json({ success: false, error: 'Cannot request workspace for another vendor' });
+    }
+
+    if (!canAccessProject(req.rbac, projectId)) {
+      return res.status(403).json({ success: false, error: 'Access denied for this project' });
+    }
+
     console.log('🏗️ Creating/getting collaborative workspace:', { projectId, pmId, vendorId, leadId, pmApproved });
 
     // First check if there's an existing workspace - if PM created it, vendor should have access
@@ -232,6 +249,10 @@ export const createOrGetCollaborativeWorkspace = async (req, res) => {
 
     // Handle existing workspace case
     if (existingWorkspace) {
+      if (!canAccessWorkspace(req.rbac, existingWorkspace.workspaceId || existingWorkspace.projectId, projectId)) {
+        return res.status(403).json({ success: false, error: 'Access denied for this workspace' });
+      }
+
       console.log('📝 Processing existing workspace access...');
       
       // Check if vendor is already in the workspace

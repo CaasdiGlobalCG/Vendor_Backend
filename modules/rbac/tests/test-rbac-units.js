@@ -472,12 +472,12 @@ function mockMiddleware() {
   assert('9.2 No rbac property → 403', getStatus() === 403 && !wasNextCalled());
 }
 
-// 9.3 — Fallback Super Admin → allowed
+// 9.3 — _fallback flag does not bypass permission checks
 {
   const mw = requirePermission('products', 'view');
-  const { res, next, wasNextCalled } = mockMiddleware();
+  const { res, next, getStatus, wasNextCalled } = mockMiddleware();
   mw({ rbac: { _fallback: true, isSuperAdmin: true, permissionSet: new Set() } }, res, next);
-  assert('9.3 Fallback Super Admin → next()', wasNextCalled());
+  assert('9.3 _fallback without permission → 403', getStatus() === 403 && !wasNextCalled());
 }
 
 // 9.4 — *:* Super Admin → allowed
@@ -537,12 +537,12 @@ function mockMiddleware() {
   assert('9.10 requireSuperAdmin — non-admin → 403', getStatus() === 403 && !wasNextCalled());
 }
 
-// 9.11 — requireSuperAdmin with fallback Super Admin
+// 9.11 — requireSuperAdmin relies on isSuperAdmin only
 {
   const mw = requireSuperAdmin();
   const { res, next, wasNextCalled } = mockMiddleware();
   mw({ rbac: { _fallback: true, isSuperAdmin: true } }, res, next);
-  assert('9.11 requireSuperAdmin — fallback → next()', wasNextCalled());
+  assert('9.11 requireSuperAdmin — isSuperAdmin true → next()', wasNextCalled());
 }
 
 // 9.12 — requireSuperAdmin with no rbac

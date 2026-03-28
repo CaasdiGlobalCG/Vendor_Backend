@@ -1,14 +1,23 @@
 import AWS from 'aws-sdk';
 import { dynamoDB, s3 } from '../../../config/aws.js';
 import { notifyPMOfVendorResponse } from '../../../websocket/notificationSocket.js';
+import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
+import * as DynamoWorkspace from '../../workspace/models/DynamoWorkspace.js';
 
 const LEAD_INVITATIONS_TABLE = 'lead_invitations_table';
 
 // Vendor: Get all leads received by vendor
 export const getVendorLeads = async (req, res) => {
   try {
-    const { vendorId } = req.body; // From vendor authentication
+    const vendorId = req.vendorId || req.body?.vendorId;
     const { status, limit = 50 } = req.query;
+
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        error: 'vendorId is required'
+      });
+    }
 
     console.log('📬 Getting vendor leads:', { vendorId, status });
 
@@ -32,8 +41,31 @@ export const getVendorLeads = async (req, res) => {
 
     const result = await dynamoDB.query(params).promise();
 
-    // Transform for frontend
-    const leads = result.Items.map(lead => ({
+    // Scope filter + transform for frontend
+    const leadsWithScope = await Promise.all((result.Items || []).map(async (lead) => {
+      const projectId = lead.projectId || null;
+      const hasProjectAccess = canAccessProject(req.rbac, projectId);
+
+      if (lead.pmDecision?.workspaceAccess) {
+        try {
+          const workspace = await DynamoWorkspace.getWorkspaceByLeadId(lead.leadId);
+          const workspaceId = workspace?.workspaceId || workspace?.id || null;
+          if (workspaceId) {
+            if (!canAccessWorkspace(req.rbac, workspaceId, projectId)) {
+              return null;
+            }
+          } else if (!hasProjectAccess) {
+            return null;
+          }
+        } catch (workspaceError) {
+          console.warn('Workspace scope lookup failed for lead:', lead.leadId, workspaceError?.message || workspaceError);
+          if (!hasProjectAccess) return null;
+        }
+      } else if (!hasProjectAccess) {
+        return null;
+      }
+
+      return {
       leadId: lead.leadId,
       projectId: lead.projectId,
       projectName: lead.projectDetails?.name || 'Unknown Project',
@@ -59,7 +91,10 @@ export const getVendorLeads = async (req, res) => {
       rejectionReason: lead.rejectionReason || null,
       negotiationHistory: lead.negotiationHistory || [],
       leadVersion: lead.leadVersion || 1
+      };
     }));
+
+    const leads = leadsWithScope.filter(Boolean);
 
     // Group by status for dashboard
     const leadsByStatus = {

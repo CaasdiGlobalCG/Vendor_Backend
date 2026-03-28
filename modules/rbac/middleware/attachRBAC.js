@@ -8,10 +8,11 @@
 //              requirePermission.js (consumes req.rbac downstream)
 // ============================================================
 
-import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { derivePlatformAccess } from '../config/modules.js';
+import { normalizeScopeAccess } from '../utils/scopeAccess.utils.js';
 
 /**
  * Determines which org ID field to use based on what's already on the request.
@@ -45,10 +46,9 @@ function resolveOrg(req) {
  *   req.rbac.permissionSet — Set for O(1) lookups
  *   req.rbac.isSuperAdmin — boolean shortcut
  *
- * Phase 1 behavior (PERMISSIVE MODE):
- *   If no RBAC membership is found, proceeds with a default Super Admin grant
- *   so existing single-owner accounts keep working. Logs a warning for tracking.
- *   This will be tightened in Phase 4 when permission enforcement goes live.
+ * Enforcement behavior:
+ *   If no RBAC membership is found or RBAC loading fails, access is denied.
+ *   No implicit Super Admin fallback is allowed.
  */
 export async function attachRBAC(req, res, next) {
   try {
@@ -70,57 +70,19 @@ export async function attachRBAC(req, res, next) {
     const memberResult = await docClient.send(new GetCommand({
       TableName: TABLES.MEMBERS,
       Key: { orgId: org.orgId, userId },
-      ProjectionExpression: 'roleId, roleName, #s, email, permissionOverrides, platformAccess',
+      ProjectionExpression: 'roleId, roleName, #s, email, permissionOverrides, platformAccess, projectAccess, workspaceAccess',
       ExpressionAttributeNames: { '#s': 'status' },
     }));
 
     const member = memberResult.Item;
 
-    // PERMISSIVE MODE: If no membership found, grant Super Admin fallback
-    // AND auto-create the rbac_members record so email is resolvable in future
+    // Strict mode: membership is required for all RBAC-protected actions.
     if (!member) {
-      const email = req.auth?.email || req.user?.email || '';
-      const displayName = req.auth?.name || email;
-      console.warn(`[RBAC] No membership found for user=${userId} org=${org.orgId}. Auto-creating member record & granting Super Admin.`);
-
-      // Fire-and-forget: create the member record so future lookups find this user
-      const now = new Date().toISOString();
-      docClient.send(new PutCommand({
-        TableName: TABLES.MEMBERS,
-        Item: {
-          orgId: org.orgId,
-          userId,
-          email,
-          displayName,
-          roleId: 'super_admin',
-          roleName: 'Super Admin',
-          status: 'active',
-          platformAccess: ['vendor', 'client', 'sales'],
-          invitedBy: 'system_auto',
-          joinedAt: now,
-          lastActiveAt: now,
-        },
-        ConditionExpression: 'attribute_not_exists(userId)',
-      })).catch(err => {
-        if (err.name !== 'ConditionalCheckFailedException') {
-          console.error('[RBAC] Failed to auto-create member record:', err.message);
-        }
+      return res.status(403).json({
+        error: 'Access denied',
+        code: 'RBAC_001',
+        message: 'You do not have organization access. Contact your organization admin.',
       });
-
-      req.rbac = {
-        orgId: org.orgId,
-        orgType: org.orgType,
-        userId,
-        roleId: 'super_admin',
-        roleName: 'Super Admin',
-        roleLevel: 0,
-        permissions: ['*:*'],
-        permissionSet: new Set(['*:*']),
-        isSuperAdmin: true,
-        platformAccess: ['vendor', 'client', 'sales'],
-        _fallback: true,
-      };
-      return next();
     }
 
     // Check if member is suspended. Auto-reactivate when timed suspension has expired.
@@ -198,9 +160,22 @@ export async function attachRBAC(req, res, next) {
       if (Array.isArray(overrides.removed)) overrides.removed.forEach(p => permSet.delete(p));
       permissions = [...permSet];
     }
+
+    // Super Admin must always have full wildcard permission, even if role seed drifts.
+    if (member.roleId === 'super_admin' && !permissions.includes('*:*')) {
+      permissions = ['*:*'];
+    }
     // platformAccess: auto-derived from the user's resolved permissions + org type
     // WHY: Scoped by orgType so vendor invites don't leak client access
     const platformAccess = derivePlatformAccess(permissions, org.orgType);
+    const accessScopes = member.roleId === 'super_admin'
+      ? {
+          projectIds: ['*'],
+          workspaceIds: ['*'],
+          allowAllProjects: true,
+          allowAllWorkspaces: true,
+        }
+      : normalizeScopeAccess(member.projectAccess, member.workspaceAccess);
 
     req.rbac = {
       orgId: org.orgId,
@@ -214,33 +189,17 @@ export async function attachRBAC(req, res, next) {
       isSuperAdmin: permissions.includes('*:*'),
       permissionOverrides: overrides || null,
       platformAccess,
+      accessScopes,
       _fallback: false,
     };
 
     return next();
   } catch (error) {
     console.error('[RBAC] Error loading RBAC context:', error?.name, error?.message, error?.stack);
-    // PERMISSIVE MODE: On error, don't block the request — log and continue
-    // TODO(RBAC-P4): Change to 500 error when enforcement is live
-    console.warn('[RBAC] Falling back to Super Admin due to error (Phase 1 permissive mode).');
-    const orgFallback = req.vendorId
-      ? { orgId: req.vendorId, orgType: 'vendor' }
-      : req.clientId
-        ? { orgId: req.clientId, orgType: 'client' }
-        : { orgId: undefined, orgType: undefined };
-    req.rbac = {
-      orgId: orgFallback.orgId,
-      orgType: orgFallback.orgType,
-      userId: req.auth?.sub || req.user?.sub,
-      roleId: 'super_admin',
-      roleName: 'Super Admin (Error Fallback)',
-      roleLevel: 0,
-      permissions: ['*:*'],
-      permissionSet: new Set(['*:*']),
-      isSuperAdmin: true,
-      platformAccess: ['vendor', 'client', 'sales'],
-      _fallback: true,
-    };
-    return next();
+    return res.status(500).json({
+      error: 'RBAC resolution failed',
+      code: 'RBAC_500',
+      message: 'Unable to verify permissions. Please try again later.',
+    });
   }
 }

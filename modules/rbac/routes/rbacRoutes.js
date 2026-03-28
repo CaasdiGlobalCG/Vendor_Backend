@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import { getMyRBAC } from '../controllers/meController.js';
-import { listMembers, inviteMember, changeMemberRole, removeMember, suspendMember, unsuspendMember } from '../controllers/membersController.js';
+import { listMembers, inviteMember, changeMemberRole, removeMember, suspendMember, unsuspendMember, updateMemberAccessScopes } from '../controllers/membersController.js';
 import { listRoles, getRoleDetails, createRole, updateRole, deleteRole } from '../controllers/rolesController.js';
 import { listInvitations, cancelInvitation } from '../controllers/invitationsController.js';
 import { getAuditLogs } from '../controllers/auditLogController.js';
@@ -49,6 +49,9 @@ router.post('/members/invite', requirePermission('user_management', 'create'), i
 
 /** PATCH /api/rbac/members/:userId/role — change a member's role */
 router.patch('/members/:userId/role', requirePermission('user_management', 'edit'), changeMemberRole);
+
+/** PATCH /api/rbac/members/:userId/access-scopes — update member project/workspace scopes */
+router.patch('/members/:userId/access-scopes', requirePermission('user_management', 'edit'), updateMemberAccessScopes);
 
 /** DELETE /api/rbac/members/:userId — remove a member */
 router.delete('/members/:userId', requirePermission('user_management', 'edit'), removeMember);

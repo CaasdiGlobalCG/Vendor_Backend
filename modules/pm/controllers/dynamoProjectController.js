@@ -1,4 +1,5 @@
 import * as DynamoProject from '../models/DynamoProject.js';
+import { canAccessProject } from '../../rbac/utils/scopeAccess.utils.js';
 
 // Create a new project
 export const createProject = async (req, res) => {
@@ -16,7 +17,8 @@ export const createProject = async (req, res) => {
 export const getAllProjects = async (req, res) => {
   try {
     const projects = await DynamoProject.getAllProjects();
-    res.json(projects);
+    const scopedProjects = projects.filter((project) => canAccessProject(req.rbac, project.projectId || project.id));
+    res.json(scopedProjects);
   } catch (error) {
     console.error('Error getting all projects:', error);
     res.status(500).json({ message: 'Failed to get projects', error: error.message });
@@ -33,6 +35,10 @@ export const getProjectById = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
     
+    if (!canAccessProject(req.rbac, project.projectId || project.id)) {
+      return res.status(403).json({ message: 'Access denied for this project' });
+    }
+
     res.json(project);
   } catch (error) {
     console.error('Error getting project by ID:', error);
@@ -44,8 +50,13 @@ export const getProjectById = async (req, res) => {
 export const getProjectsByVendorId = async (req, res) => {
   try {
     const { vendorId } = req.params;
+    if (req.vendorId && String(req.vendorId) !== String(vendorId) && !req.rbac?.isSuperAdmin) {
+      return res.status(403).json({ message: 'Cannot access another vendor\'s projects' });
+    }
+
     const projects = await DynamoProject.getProjectsByVendorId(vendorId);
-    res.json(projects);
+    const scopedProjects = projects.filter((project) => canAccessProject(req.rbac, project.projectId || project.id));
+    res.json(scopedProjects);
   } catch (error) {
     console.error('Error getting projects by vendor ID:', error);
     res.status(500).json({ message: 'Failed to get projects', error: error.message });
@@ -57,7 +68,8 @@ export const getProjectsByClientId = async (req, res) => {
   try {
     const { clientId } = req.params;
     const projects = await DynamoProject.getProjectsByClientId(clientId);
-    res.json(projects);
+    const scopedProjects = projects.filter((project) => canAccessProject(req.rbac, project.projectId || project.id));
+    res.json(scopedProjects);
   } catch (error) {
     console.error('Error getting projects by client ID:', error);
     res.status(500).json({ message: 'Failed to get projects', error: error.message });
@@ -77,6 +89,10 @@ export const updateProject = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
     
+    if (!canAccessProject(req.rbac, existingProject.projectId || existingProject.id)) {
+      return res.status(403).json({ message: 'Access denied for this project' });
+    }
+
     const updatedProject = await DynamoProject.updateProject(id, updateData);
     res.json(updatedProject);
   } catch (error) {
@@ -97,6 +113,10 @@ export const deleteProject = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
     
+    if (!canAccessProject(req.rbac, existingProject.projectId || existingProject.id)) {
+      return res.status(403).json({ message: 'Access denied for this project' });
+    }
+
     await DynamoProject.deleteProject(id);
     res.json({ message: 'Project deleted successfully' });
   } catch (error) {
