@@ -275,7 +275,7 @@ export const shareWorkspace = async (req, res) => {
 export const addTaskToWorkspace = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, priority, dueDate, userId, userEmail, userName } = req.body;
+    const { name, description, priority, dueDate, assignedUserId, userId, userEmail, userName } = req.body;
     
     console.log('🔄 Backend: Adding task to workspace', { workspaceId: id, taskName: name });
     
@@ -292,6 +292,8 @@ export const addTaskToWorkspace = async (req, res) => {
         return res.status(403).json({ message: 'Workspace is locked as project completed; cannot add tasks' });
       }
     
+    const assignedUserIds = assignedUserId ? [assignedUserId] : [];
+
     // Create new task
     const newTask = {
       id: `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -300,7 +302,8 @@ export const addTaskToWorkspace = async (req, res) => {
       priority: priority || 'medium',
       status: 'active',
       dueDate: dueDate || null,
-      assignedUsers: 1, // Default assigned users for display
+      assignedUserIds,
+      assignedUsers: assignedUserIds.length,
       color: 'bg-blue-500', // Default color for backward compatibility
       subtasks: [],
       createdAt: new Date().toISOString(),
@@ -347,7 +350,7 @@ export const addTaskToWorkspace = async (req, res) => {
 export const addSubtaskToTask = async (req, res) => {
   try {
     const { id, taskId } = req.params;
-    const { name, description, userId, userEmail, userName } = req.body;
+    const { name, description, dependsOnSubtaskId, flowOrder, assignedUserId, userId, userEmail, userName } = req.body;
     
     console.log('🔄 Backend: Adding subtask to task', { workspaceId: id, taskId, subtaskName: name });
     
@@ -371,13 +374,31 @@ export const addSubtaskToTask = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
     
+    const updatedTasks = [...tasks];
+    const existingSubtasks = updatedTasks[taskIndex].subtasks || [];
+    const normalizedDependsOnSubtaskId =
+      dependsOnSubtaskId === 'none'
+        ? null
+        : (dependsOnSubtaskId && dependsOnSubtaskId !== 'auto-previous'
+            ? dependsOnSubtaskId
+            : (existingSubtasks.length > 0 ? existingSubtasks[existingSubtasks.length - 1].id : null));
+    const numericFlowOrder = Number.isFinite(Number(flowOrder)) && Number(flowOrder) > 0
+      ? Number(flowOrder)
+      : existingSubtasks.length + 1;
+
+    const assignedUserIds = assignedUserId ? [assignedUserId] : [];
+
     // Create new subtask
     const newSubtask = {
       id: `subtask_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       name: name || 'Untitled Subtask',
       description: description || '',
       status: 'active',
-      assignedUsers: 1, // Default assigned users for display
+      flowOrder: numericFlowOrder,
+      dependsOnSubtaskIds: normalizedDependsOnSubtaskId ? [normalizedDependsOnSubtaskId] : [],
+      nextSubtaskIds: [],
+      assignedUserIds,
+      assignedUsers: assignedUserIds.length,
       color: 'bg-gray-400', // Default color for backward compatibility
       canvasData: {
         nodes: [],
@@ -389,8 +410,26 @@ export const addSubtaskToTask = async (req, res) => {
     };
     
     // Add subtask to task
-    const updatedTasks = [...tasks];
-    updatedTasks[taskIndex].subtasks = [...(updatedTasks[taskIndex].subtasks || []), newSubtask];
+    updatedTasks[taskIndex].subtasks = [...existingSubtasks, newSubtask];
+
+    // Maintain forward links for flow visualization
+    if (normalizedDependsOnSubtaskId) {
+      updatedTasks[taskIndex].subtasks = updatedTasks[taskIndex].subtasks.map((subtask) => {
+        if (subtask.id !== normalizedDependsOnSubtaskId) {
+          return subtask;
+        }
+
+        const nextIds = Array.isArray(subtask.nextSubtaskIds) ? subtask.nextSubtaskIds : [];
+        if (nextIds.includes(newSubtask.id)) {
+          return subtask;
+        }
+
+        return {
+          ...subtask,
+          nextSubtaskIds: [...nextIds, newSubtask.id]
+        };
+      });
+    }
     updatedTasks[taskIndex].updatedAt = new Date().toISOString();
     
     const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, { tasks: updatedTasks });
@@ -424,6 +463,116 @@ export const addSubtaskToTask = async (req, res) => {
   } catch (error) {
     console.error('❌ Backend: Error adding subtask:', error);
     res.status(500).json({ message: 'Failed to add subtask', error: error.message });
+  }
+};
+
+// Update task details inside workspace
+export const updateTaskInWorkspace = async (req, res) => {
+  try {
+    const { id, taskId } = req.params;
+    const { name, description, priority, assignedUserId } = req.body;
+
+    const workspace = await DynamoWorkspace.getWorkspaceById(id);
+    if (!workspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    const tasks = workspace.tasks || [];
+    const taskIndex = tasks.findIndex((task) => task.id === taskId);
+    if (taskIndex === -1) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    const updatedTasks = [...tasks];
+    const existingTask = updatedTasks[taskIndex];
+
+    const assignedUserIds =
+      assignedUserId === undefined
+        ? (existingTask.assignedUserIds || [])
+        : (assignedUserId ? [assignedUserId] : []);
+
+    updatedTasks[taskIndex] = {
+      ...existingTask,
+      ...(name !== undefined ? { name } : {}),
+      ...(description !== undefined ? { description } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      assignedUserIds,
+      assignedUsers: assignedUserIds.length,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, { tasks: updatedTasks });
+
+    res.status(200).json({
+      message: 'Task updated successfully',
+      task: updatedTasks[taskIndex],
+      workspace: updatedWorkspace,
+    });
+  } catch (error) {
+    console.error('❌ Backend: Error updating task:', error);
+    res.status(500).json({ message: 'Failed to update task', error: error.message });
+  }
+};
+
+// Update subtask details inside a task
+export const updateSubtaskInTask = async (req, res) => {
+  try {
+    const { id, taskId, subtaskId } = req.params;
+    const { name, description, priority, assignedUserId } = req.body;
+
+    const workspace = await DynamoWorkspace.getWorkspaceById(id);
+    if (!workspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    const tasks = workspace.tasks || [];
+    const taskIndex = tasks.findIndex((task) => task.id === taskId);
+    if (taskIndex === -1) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    const subtasks = tasks[taskIndex].subtasks || [];
+    const subtaskIndex = subtasks.findIndex((subtask) => subtask.id === subtaskId);
+    if (subtaskIndex === -1) {
+      return res.status(404).json({ message: 'Subtask not found' });
+    }
+
+    const updatedTasks = [...tasks];
+    const updatedSubtasks = [...subtasks];
+    const existingSubtask = updatedSubtasks[subtaskIndex];
+
+    const assignedUserIds =
+      assignedUserId === undefined
+        ? (existingSubtask.assignedUserIds || [])
+        : (assignedUserId ? [assignedUserId] : []);
+
+    updatedSubtasks[subtaskIndex] = {
+      ...existingSubtask,
+      ...(name !== undefined ? { name } : {}),
+      ...(description !== undefined ? { description } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      assignedUserIds,
+      assignedUsers: assignedUserIds.length,
+      updatedAt: new Date().toISOString(),
+    };
+
+    updatedTasks[taskIndex] = {
+      ...updatedTasks[taskIndex],
+      subtasks: updatedSubtasks,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, { tasks: updatedTasks });
+
+    res.status(200).json({
+      message: 'Subtask updated successfully',
+      subtask: updatedSubtasks[subtaskIndex],
+      task: updatedTasks[taskIndex],
+      workspace: updatedWorkspace,
+    });
+  } catch (error) {
+    console.error('❌ Backend: Error updating subtask:', error);
+    res.status(500).json({ message: 'Failed to update subtask', error: error.message });
   }
 };
 

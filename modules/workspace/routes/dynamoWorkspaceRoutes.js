@@ -122,6 +122,8 @@ router.get('/cas-member/:userId/workspaces', async (req, res) => {
 // Task management within workspace
 router.post('/workspaces/:id/tasks', dynamoWorkspaceController.addTaskToWorkspace);
 router.post('/workspaces/:id/tasks/:taskId/subtasks', dynamoWorkspaceController.addSubtaskToTask);
+router.patch('/workspaces/:id/tasks/:taskId', dynamoWorkspaceController.updateTaskInWorkspace);
+router.patch('/workspaces/:id/tasks/:taskId/subtasks/:subtaskId', dynamoWorkspaceController.updateSubtaskInTask);
 router.put('/workspaces/:id/tasks/:taskId/subtasks/:subtaskId/canvas', dynamoWorkspaceController.updateSubtaskCanvas);
 
 // Delete a workspace
