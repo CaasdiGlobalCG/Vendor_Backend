@@ -36,10 +36,20 @@ import { getWorkspacePurchaseOrders } from './modules/workspace/controllers/work
 import sendProgressEmailRoutes from './routes/sendProgressEmail.js'; // Import sendProgressEmail route
 import handoffRoutes from './routes/handoffRoutes.js'; // Import handoff routes for vendor-to-client switching
 import vendorTendersRoute from './routes/vendorTendersRoute.js'; // Proxy: fetch vendor tenders from Sales Backend
+import webhookRoutes from './modules/workflow/routes/webhookRoutes.js';
+import { sendWorkflowEmail } from './modules/workflow/services/emailNotificationService.js';
+import {
+  createTaskInWorkspace,
+  updateNodeStatusInWorkspace,
+  assignUserInWorkspace
+} from './modules/workflow/services/workspaceActionService.js';
 
 // Import WebSocket initialization
 import { initWebSocketServer } from './websocket/notificationSocket.js';
 import { initCanvasWebSocketServer, flushAll as flushAllCanvasBuffers } from './websocket/canvasSocket.js';
+
+// Import Workflow Module
+import workflowRoutes from './modules/workflow/routes/workflowRoutes.js';
 
 // Import subscription scheduler
 import { initializeSubscriptionScheduler } from './modules/workspace/services/subscriptionScheduler.js';
@@ -56,6 +66,20 @@ dotenv.config();
 const app = express();
 const PORT = process.env.VENDOR_BACKEND_PORT;
 const isProd = process.env.NODE_ENV === 'production';
+
+// Default action service adapters for workflow executor.
+app.locals.actionServices = {
+  createTask: async (templateType, taskData) => createTaskInWorkspace(templateType, taskData),
+  updateStatus: async (nodeId, newStatus, message, options) =>
+    updateNodeStatusInWorkspace(nodeId, newStatus, message, options),
+  assignUser: async (nodeId, userId, options) => assignUserInWorkspace(nodeId, userId, options),
+  sendEmail: async (emailPayload) => sendWorkflowEmail(emailPayload),
+  invokeSubworkflow: async (subworkflowId) => ({
+    executionId: `subexec-${Date.now()}`,
+    status: 'completed',
+    subworkflowId
+  })
+};
 
 const PROD_ORIGINS = ['https://caasdiglobal.in', 'https://www.caasdiglobal.in'];
 const LOCAL_DEV_ORIGINS = [
@@ -210,6 +234,11 @@ async function loadModules() {
     
     console.log('✅ Workspace Module loaded');
 
+  // Load Workflow Module
+  console.log('🔄 Loading Workflow Module...');
+  app.use('/api/workflows', workflowRoutes);
+  console.log('✅ Workflow Module loaded');
+
     // Load Post Services Module
     console.log('🔄 Loading Post Services Module...');
     app.use('/api', postServiceRoutes);
@@ -279,6 +308,7 @@ app.use('/api/customers', customersRoutes); // Customers routes
 app.use('/api/items', itemsRoutes); // Items routes
 app.use('/api/turnkey-workflows', turnkeyWorkflowRoutes); // Turnkey Workflow Management routes
 app.use('/api/element-deletion-history', elementDeletionHistoryRoutes); // Element deletion history routes
+app.use('/api/webhooks', webhookRoutes); // Workflow webhooks
 app.use('/api', sendProgressEmailRoutes); // Register sendProgressEmail route
 
 // Structured error logger — replaces basic console.error(err.stack)

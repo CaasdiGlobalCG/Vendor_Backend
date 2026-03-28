@@ -2,6 +2,92 @@ import * as DynamoWorkspace from '../models/DynamoWorkspace.js';
 import ActivityTracker from '../../../utils/activityTracker.js';
 import { dynamoDB } from '../../../config/aws.js';
 import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
+import * as WorkflowScheduler from '../../workflow/services/workflowScheduler.js';
+
+const isCompletedStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  return normalized === 'completed' || normalized === 'complete' || normalized === 'done';
+};
+
+const buildCanvasWorkflowEvents = (workspaceId, prevNodes = [], nextNodes = []) => {
+  const previousById = new Map((Array.isArray(prevNodes) ? prevNodes : []).filter((node) => node?.id).map((node) => [node.id, node]));
+  const events = [];
+
+  (Array.isArray(nextNodes) ? nextNodes : []).forEach((nextNode) => {
+    if (!nextNode?.id) return;
+
+    const prevNode = previousById.get(nextNode.id) || {};
+    const prevData = prevNode.data || {};
+    const nextData = nextNode.data || {};
+
+    const previousStatus = prevData.status;
+    const currentStatus = nextData.status;
+    if (currentStatus && currentStatus !== previousStatus) {
+      events.push({
+        workspaceId,
+        nodeId: nextNode.id,
+        type: 'status-change',
+        data: {
+          status: currentStatus,
+          previousStatus,
+          nodeType: nextNode.type,
+          source: 'canvas-save'
+        }
+      });
+
+      if (isCompletedStatus(currentStatus)) {
+        events.push({
+          workspaceId,
+          nodeId: nextNode.id,
+          type: 'task-completion',
+          data: {
+            status: 'Completed',
+            previousStatus,
+            nodeType: nextNode.type,
+            source: 'canvas-save'
+          }
+        });
+      }
+    }
+
+    const previousApprovalStatus = prevData.approvalStatus;
+    const currentApprovalStatus = nextData.approvalStatus;
+    if (currentApprovalStatus && currentApprovalStatus !== previousApprovalStatus) {
+      events.push({
+        workspaceId,
+        nodeId: nextNode.id,
+        type: 'approval',
+        data: {
+          approvalStatus: currentApprovalStatus,
+          previousApprovalStatus,
+          status: currentStatus || previousStatus,
+          source: 'canvas-save'
+        }
+      });
+    }
+  });
+
+  return events;
+};
+
+const triggerWorkflowEvents = async (events = [], actionServices = null) => {
+  if (!Array.isArray(events) || events.length === 0 || !actionServices) {
+    return;
+  }
+
+  for (const event of events) {
+    try {
+      await WorkflowScheduler.handleCanvasEvent(event, actionServices);
+    } catch (error) {
+      console.error('⚠️ Workflow event dispatch failed:', {
+        type: event?.type,
+        workspaceId: event?.workspaceId,
+        nodeId: event?.nodeId,
+        message: error.message
+      });
+    }
+  }
+};
 
 // Create a new workspace
 export const createWorkspace = async (req, res) => {
@@ -192,6 +278,7 @@ export const saveWorkspaceCanvas = async (req, res) => {
   try {
     const { id } = req.params;
     const { nodes, edges, layers, zoomLevel, canvasSettings } = req.body;
+    const actionServices = req.app?.locals?.actionServices;
     
     console.log('🔄 Backend: saveWorkspaceCanvas called', {
       workspaceId: id,
@@ -222,6 +309,8 @@ export const saveWorkspaceCanvas = async (req, res) => {
       return res.status(403).json({ message: 'Workspace is locked as project completed; canvas updates are not allowed' });
     }
 
+    const workflowEvents = buildCanvasWorkflowEvents(id, existingWorkspace.nodes || [], nodes || []);
+
     const workspaceData = {
       nodes: nodes || [],
       edges: edges || [],
@@ -249,6 +338,8 @@ export const saveWorkspaceCanvas = async (req, res) => {
       workspaceId: id,
       updatedAt: updatedWorkspace.updatedAt
     });
+
+    await triggerWorkflowEvents(workflowEvents, actionServices);
     
     res.status(200).json({ 
       message: 'Workspace canvas saved successfully',
@@ -609,6 +700,7 @@ export const updateSubtaskCanvas = async (req, res) => {
   try {
     const { id, taskId, subtaskId } = req.params;
     const { nodes, edges, zoomLevel } = req.body;
+    const actionServices = req.app?.locals?.actionServices;
     
     console.log('🔄 Backend: Updating subtask canvas', { 
       workspaceId: id, 
@@ -697,6 +789,7 @@ export const updateSubtaskCanvas = async (req, res) => {
 
     const incomingNodes = Array.isArray(nodes) ? nodes : [];
     const mergedNodes = incomingNodes.map((n) => mergeNodeData(existingNodesById.get(n?.id), n));
+    const workflowEvents = buildCanvasWorkflowEvents(id, existingNodes, mergedNodes);
 
     updatedTasks[taskIndex].subtasks[subtaskIndex].canvasData = {
       nodes: mergedNodes,
@@ -799,6 +892,8 @@ export const updateSubtaskCanvas = async (req, res) => {
         nodesCount: nodes?.length || 0
       });
     }
+
+    await triggerWorkflowEvents(workflowEvents, actionServices);
     
     res.status(200).json({
       message: 'Subtask canvas updated successfully',

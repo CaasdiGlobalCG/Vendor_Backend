@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Workflow Builder Client How-To Guide</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #18222d;
+      --muted: #566273;
+      --primary: #0f766e;
+      --primary-dark: #0b5b55;
+      --line: #dbe3ec;
+      --soft: #e9f6f4;
+      --warn: #fff7e6;
+      --warn-line: #f2d58c;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background: radial-gradient(circle at 10% 0%, #ebf6f5, var(--bg) 35%);
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+
+    .hero {
+      background: linear-gradient(120deg, var(--primary), var(--primary-dark));
+      color: #fff;
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 16px;
+      box-shadow: 0 12px 28px rgba(15, 118, 110, 0.25);
+    }
+
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.6rem, 2.8vw, 2.2rem);
+      line-height: 1.3;
+    }
+
+    .hero p {
+      margin: 0;
+      opacity: 0.96;
+      font-size: 1rem;
+    }
+
+    .meta {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tag {
+      font-size: 0.84rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      margin-top: 14px;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 1.2rem;
+      color: #0f4450;
+    }
+
+    h3 {
+      margin: 14px 0 8px;
+      font-size: 1.03rem;
+      color: #13505f;
+    }
+
+    p { margin: 8px 0; }
+
+    ul, ol {
+      margin: 8px 0 0 20px;
+      padding: 0;
+    }
+
+    li { margin: 6px 0; }
+
+    .note {
+      margin-top: 10px;
+      border-left: 4px solid var(--primary);
+      background: var(--soft);
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+
+    .warn {
+      margin-top: 10px;
+      border-left: 4px solid #d09a1b;
+      background: var(--warn);
+      border: 1px solid var(--warn-line);
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .step {
+      border: 1px dashed #b9c8d8;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fbfdff;
+    }
+
+    .kpi {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .kpi div {
+      background: #f8fbff;
+      border: 1px solid #dce8f7;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 0.95rem;
+    }
+
+    .footer {
+      text-align: center;
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 860px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .kpi { grid-template-columns: 1fr; }
+      .container { padding: 14px 10px 30px; }
+      .card { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <section class="hero">
+      <h1>Workflow Builder: Client How-To Guide</h1>
+      <p>Detailed, non-technical operating handbook for client leadership and process teams.</p>
+      <div class="meta">
+        <span class="tag">Client-facing</span>
+        <span class="tag">How-to format</span>
+        <span class="tag">Non-technical</span>
+        <span class="tag">Operational governance</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>1) Purpose of This Guide</h2>
+      <p>This guide helps your teams adopt Workflow Builder in a practical, repeatable way. It explains what to automate, how to design it, how to launch safely, and how to improve performance over time.</p>
+      <ul>
+        <li>For management teams: decision and governance clarity</li>
+        <li>For operations teams: step-by-step usage model</li>
+        <li>For clients: handover-ready framework without technical dependency</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>2) What Workflow Builder Does</h2>
+      <p>Workflow Builder turns process instructions into automatic execution.</p>
+      <div class="grid-2">
+        <div class="step">
+          <h3>Trigger</h3>
+          <p>The event that starts the process, such as an approval or status change.</p>
+        </div>
+        <div class="step">
+          <h3>Logic</h3>
+          <p>The business rule that decides whether and how to proceed.</p>
+        </div>
+        <div class="step">
+          <h3>Action</h3>
+          <p>The automatic next step, such as status update, assignment, or notification.</p>
+        </div>
+        <div class="step">
+          <h3>Outcome</h3>
+          <p>Consistent, measurable execution with fewer delays and less manual follow-up.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3) When to Use It</h2>
+      <p>Use Workflow Builder when a process is frequent, cross-team, and delay-prone.</p>
+      <ul>
+        <li>Approvals often get stuck waiting</li>
+        <li>Teams rely on reminders to move work</li>
+        <li>Process behavior is inconsistent across people</li>
+        <li>Leadership needs predictable cycle times and accountability</li>
+      </ul>
+      <div class="note">If a process is unclear or constantly changing, document and stabilize it first, then automate.</div>
+    </section>
+
+    <section class="card">
+      <h2>4) Roles and Ownership</h2>
+      <p>Every workflow should have named owners before activation.</p>
+      <ul>
+        <li><strong>Business Owner:</strong> Defines policy and desired outcome</li>
+        <li><strong>Process Owner:</strong> Maintains day-to-day correctness</li>
+        <li><strong>Approver Owner:</strong> Owns multi-level approval structure</li>
+        <li><strong>Reporting Owner:</strong> Tracks KPI and monthly improvements</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>5) Detailed Step-by-Step How-To</h2>
+
+      <h3>Step 1: Define the objective</h3>
+      <p>Write one business sentence:</p>
+      <p><em>When X happens, do Y automatically so that Z improves.</em></p>
+      <ul>
+        <li>Is the outcome measurable?</li>
+        <li>Will it reduce delay, risk, or manual effort?</li>
+      </ul>
+
+      <h3>Step 2: Select the trigger</h3>
+      <ul>
+        <li>Choose one clear event to start the process</li>
+        <li>Examples: approval complete, status moved, task completed</li>
+      </ul>
+
+      <h3>Step 3: Define approval levels</h3>
+      <ul>
+        <li>Decide approval order: sequential, parallel, or conditional</li>
+        <li>Document who approves at each level</li>
+        <li>Define what happens for rejection and escalation</li>
+      </ul>
+
+      <h3>Step 4: Add decision rules</h3>
+      <ul>
+        <li>Map conditions to actions</li>
+        <li>Cover both success and exception paths</li>
+      </ul>
+
+      <h3>Step 5: Add actions in sequence</h3>
+      <ol>
+        <li>Update status</li>
+        <li>Assign owner</li>
+        <li>Notify stakeholders</li>
+        <li>Trigger next stage</li>
+      </ol>
+
+      <h3>Step 6: Use clear workflow naming</h3>
+      <p>Recommended format: <strong>Function - Stage - Outcome</strong></p>
+      <p>Example: <em>Procurement - Approval Complete - Notify Execution Team</em></p>
+
+      <h3>Step 7: Test before rollout</h3>
+      <ul>
+        <li>Test approval path</li>
+        <li>Test rejection path</li>
+        <li>Test multi-level and exception scenarios</li>
+      </ul>
+
+      <h3>Step 8: Launch in controlled scope</h3>
+      <ul>
+        <li>Start with one team and one process</li>
+        <li>Review results in first cycle</li>
+        <li>Expand after validation</li>
+      </ul>
+
+      <h3>Step 9: Review monthly and optimize</h3>
+      <ul>
+        <li>Measure bottlenecks</li>
+        <li>Remove unnecessary steps</li>
+        <li>Improve escalations and turnaround</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>6) Multi-Level Approval Design Guide</h2>
+      <h3>Sequential approvals</h3>
+      <p>Use when strict order is mandatory.</p>
+
+      <h3>Parallel approvals</h3>
+      <p>Use when multiple stakeholders can review at the same time.</p>
+
+      <h3>Conditional approvals</h3>
+      <p>Use when extra approval is needed only for specific cases (for example high-value or high-risk items).</p>
+
+      <div class="warn">
+        Always define rejection behavior. A workflow without a rejection path creates confusion and delay.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>7) Client-Ready Use Cases</h2>
+
+      <h3>Use Case A: PM + Client approval workflow</h3>
+      <ol>
+        <li>PM approval received</li>
+        <li>Client approval requested</li>
+        <li>Client approval received</li>
+        <li>Status moved to execution-ready</li>
+        <li>Implementation team notified</li>
+      </ol>
+
+      <h3>Use Case B: Rejection and rework</h3>
+      <ol>
+        <li>Rejection event captured</li>
+        <li>Status moved to rework required</li>
+        <li>Ownership reassigned</li>
+        <li>Rework instructions notified</li>
+      </ol>
+
+      <h3>Use Case C: Time-based escalation</h3>
+      <ol>
+        <li>Approval pending beyond target time</li>
+        <li>Escalation sent to manager</li>
+        <li>Reminder continues until resolved</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>8) Rollout Plan for Clients</h2>
+      <div class="grid-2">
+        <div class="step">
+          <h3>Week 1: Discovery</h3>
+          <p>Identify top delayed journeys and map ownership.</p>
+        </div>
+        <div class="step">
+          <h3>Week 2: Build and pilot</h3>
+          <p>Configure and test first workflows.</p>
+        </div>
+        <div class="step">
+          <h3>Week 3: Controlled launch</h3>
+          <p>Go live for limited group and monitor exceptions.</p>
+        </div>
+        <div class="step">
+          <h3>Week 4: Governance review</h3>
+          <p>Review KPI changes and finalize scale-up plan.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>9) KPI Dashboard for Management</h2>
+      <div class="kpi">
+        <div>Average cycle time</div>
+        <div>Approval turnaround by level</div>
+        <div>Pending work age</div>
+        <div>Manual follow-ups avoided</div>
+        <div>Escalation count</div>
+        <div>Exception and override volume</div>
+      </div>
+      <div class="note">Use monthly trend comparisons, not one-time snapshots, for decision-making.</div>
+    </section>
+
+    <section class="card">
+      <h2>10) Governance and Change Control</h2>
+      <ul>
+        <li>No workflow activation without owner sign-off</li>
+        <li>Track change reason, approver, and go-live date</li>
+        <li>Run monthly operational review</li>
+        <li>Run quarterly optimization review</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>11) Common Mistakes to Avoid</h2>
+      <ul>
+        <li>Automating unclear processes</li>
+        <li>Creating duplicate workflows for same goal</li>
+        <li>Ignoring rejection and exception paths</li>
+        <li>Skipping pilot rollout</li>
+        <li>Running without role ownership</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>12) Client Handover Checklist</h2>
+      <ol>
+        <li>Workflow objective documented in business language</li>
+        <li>Approval levels and escalation rules finalized</li>
+        <li>Triggers, logic, and actions validated by owners</li>
+        <li>Success and rejection scenarios tested</li>
+        <li>Pilot scope and review date confirmed</li>
+        <li>KPI baseline captured</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>13) Final Leadership Summary</h2>
+      <p>Workflow Builder helps organizations move from reminder-driven coordination to policy-driven execution.</p>
+      <p>With proper ownership and governance, it delivers faster throughput, stronger approval control, and better accountability across teams.</p>
+    </section>
+
+    <p class="footer">Prepared for Client Management Teams | Document Type: Detailed How-To (Non-Technical)</p>
+  </main>
+</body>
+</html>

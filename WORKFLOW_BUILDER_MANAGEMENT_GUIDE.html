@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Workflow Builder Management Guide</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --ink: #16202a;
+      --muted: #5a6876;
+      --accent: #0f766e;
+      --line: #d9e1ea;
+      --soft: #e9f5f3;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background: radial-gradient(circle at top right, #e9f5f3, var(--bg) 34%);
+      line-height: 1.6;
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 28px 18px 42px;
+    }
+
+    .hero {
+      background: linear-gradient(120deg, #0f766e, #0b5563);
+      color: #fff;
+      border-radius: 16px;
+      padding: 26px;
+      box-shadow: 0 10px 28px rgba(15, 118, 110, 0.22);
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.6rem, 2.8vw, 2.2rem);
+      line-height: 1.25;
+    }
+
+    .hero p {
+      margin: 0;
+      opacity: 0.95;
+      font-size: 1rem;
+    }
+
+    .section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      margin: 14px 0;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 1.22rem;
+      color: #0e3e4a;
+    }
+
+    h3 {
+      margin: 14px 0 8px;
+      font-size: 1.03rem;
+      color: #12485b;
+    }
+
+    p { margin: 8px 0; }
+
+    ul, ol {
+      margin: 8px 0 0 20px;
+      padding: 0;
+    }
+
+    li { margin: 5px 0; }
+
+    .pill {
+      display: inline-block;
+      background: var(--soft);
+      color: #0d5b55;
+      border: 1px solid #bee4de;
+      border-radius: 999px;
+      padding: 5px 10px;
+      margin: 3px 5px 3px 0;
+      font-size: 0.88rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #f4fbfa;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
+
+    .footer {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      text-align: center;
+    }
+
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      .wrap { padding: 16px 12px 26px; }
+      .section { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>Workflow Builder: Management Guide</h1>
+      <p>Business-focused adoption and operating model for leadership teams</p>
+    </section>
+
+    <section class="section">
+      <h2>1) Purpose of This Guide</h2>
+      <p>This guide is intended for management and business stakeholders. It explains what the Workflow Builder is, why it matters, how teams should use it, and how leadership can govern it successfully.</p>
+      <div>
+        <span class="pill">Non-technical</span>
+        <span class="pill">Business outcomes</span>
+        <span class="pill">Governance-ready</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>2) Executive Summary</h2>
+      <p>The Workflow Builder enables teams to automate repeated business coordination steps.</p>
+      <p>Example: <strong>"When approval is completed, trigger the next actions automatically."</strong></p>
+      <div class="callout">
+        It reduces follow-up dependency, improves process consistency, and gives leadership better control and visibility.
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>3) Business Problem It Solves</h2>
+      <ul>
+        <li>Work stalls during handoffs</li>
+        <li>Approvals are delayed due to missed follow-ups</li>
+        <li>Manual reminders consume team bandwidth</li>
+        <li>Process execution varies across teams</li>
+        <li>Audit visibility is inconsistent</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>4) How It Works (Business View)</h2>
+      <div class="grid">
+        <div>
+          <h3>Trigger</h3>
+          <p>The event that starts automation (for example, an approval or status change).</p>
+        </div>
+        <div>
+          <h3>Decision Logic</h3>
+          <p>Business conditions that decide if and how the process should continue.</p>
+        </div>
+        <div>
+          <h3>Action</h3>
+          <p>What happens automatically next (status update, assignment, or notification).</p>
+        </div>
+        <div>
+          <h3>Outcome</h3>
+          <p>Faster execution with fewer misses and clearer accountability.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>5) Multi-Level Approval Model</h2>
+      <p>The platform supports approvals at multiple levels (for example PM, client, and additional internal checkpoints).</p>
+      <ul>
+        <li><strong>Sequential:</strong> Approvals occur in a strict order</li>
+        <li><strong>Parallel:</strong> Multiple approvals can happen at the same time</li>
+        <li><strong>Conditional:</strong> Additional approvals apply only when business rules require them</li>
+      </ul>
+      <div class="callout">
+        This enables stronger governance without slowing down routine decisions.
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>6) Use Cases for Leadership</h2>
+      <h3>Procurement</h3>
+      <ul>
+        <li>Auto-route requests to the right approvers</li>
+        <li>Notify stakeholders when approvals are complete</li>
+        <li>Trigger downstream activities without manual follow-up</li>
+      </ul>
+
+      <h3>Project Management</h3>
+      <ul>
+        <li>Move tasks through stage gates based on completion</li>
+        <li>Escalate exceptions based on risk or delay</li>
+        <li>Improve milestone predictability</li>
+      </ul>
+
+      <h3>Finance</h3>
+      <ul>
+        <li>Enforce approval checkpoints for financial actions</li>
+        <li>Reduce delays from handoff gaps</li>
+        <li>Strengthen approval traceability</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>7) Operating Model for Management</h2>
+      <ol>
+        <li>Define outcomes first (speed, compliance, quality)</li>
+        <li>Assign workflow owners for accountability</li>
+        <li>Prioritize high-impact cross-team journeys</li>
+        <li>Review performance monthly</li>
+      </ol>
+      <h3>Recommended ownership</h3>
+      <ul>
+        <li>Business owner: accountable for policy</li>
+        <li>Operations owner: accountable for execution quality</li>
+        <li>Backup owner: continuity and handover coverage</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>8) Governance Principles</h2>
+      <ul>
+        <li>Use clear workflow names in business language</li>
+        <li>Avoid duplicate workflows for the same purpose</li>
+        <li>Require owner sign-off before changes</li>
+        <li>Review inactive workflows quarterly</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>9) Rollout Plan</h2>
+      <h3>Phase 1: Core Journeys</h3>
+      <p>Launch 3 to 5 high-impact workflows with measurable outcomes.</p>
+
+      <h3>Phase 2: Department Expansion</h3>
+      <p>Extend to procurement, PM, finance, and support with common standards.</p>
+
+      <h3>Phase 3: Optimization</h3>
+      <p>Use performance insights to simplify and improve routing logic.</p>
+    </section>
+
+    <section class="section">
+      <h2>10) KPIs for Monthly Leadership Review</h2>
+      <ul>
+        <li>Cycle time per process</li>
+        <li>Approval turnaround time by level</li>
+        <li>Manual follow-ups per process</li>
+        <li>Workflow success rate</li>
+        <li>Exception and override volume</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>11) Risks and Mitigation</h2>
+      <h3>Risk: Over-automation</h3>
+      <p>Mitigation: Business owner sign-off before activation.</p>
+
+      <h3>Risk: Workflow sprawl</h3>
+      <p>Mitigation: Maintain centralized workflow inventory and ownership map.</p>
+
+      <h3>Risk: Low adoption</h3>
+      <p>Mitigation: Role-based onboarding and clear operational playbooks.</p>
+
+      <h3>Risk: Process drift over time</h3>
+      <p>Mitigation: Monthly governance and KPI-based reviews.</p>
+    </section>
+
+    <section class="section">
+      <h2>12) Leadership Next Steps</h2>
+      <ol>
+        <li>Approve initial 3 to 5 high-impact workflows</li>
+        <li>Assign named owners and backup owners</li>
+        <li>Set monthly governance cadence</li>
+        <li>Track KPI baseline and first-month results</li>
+        <li>Optimize based on findings</li>
+      </ol>
+      <div class="callout">
+        Success means fewer follow-up escalations, better accountability, and faster business throughput.
+      </div>
+    </section>
+
+    <p class="footer">Prepared for: Management Team | Topic: Workflow Builder Business Adoption and Governance</p>
+  </main>
+</body>
+</html>
