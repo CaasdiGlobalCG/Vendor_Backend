@@ -504,4 +504,18 @@ router.post('/update-progress', authenticateUser, requireVendor, upload.single('
  */
 router.post('/project-completion', authenticateUser, requireVendor, upload.single('completionFiles'), submitProjectCompletion);
 
+/**
+ * @route   GET /api/workspace/subscriptions/analytics/forecast
+ * @desc    Get 12-month revenue forecast based on subscriptions (Vendor only)
+ * @access  Private
+ */
+router.get('/subscriptions/analytics/forecast', authenticateUser, requireVendor, getRevenueForecasting);
+
+/**
+ * @route   GET /api/workspace/subscriptions/analytics/cohorts
+ * @desc    Get cohort analysis of subscriptions by creation month (Vendor only)
+ * @access  Private
+ */
+router.get('/subscriptions/analytics/cohorts', authenticateUser, requireVendor, getCohortAnalysis);
+
 export default router;

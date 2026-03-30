@@ -158,8 +158,18 @@ export const addService = async (req, res) => {
     // Add the service to the vendor's services array
     const updatedServices = vendor.services ? [...vendor.services, newService] : [newService];
     
+    // DEBUG: Log services being added
+    console.log(`📝 Adding service for vendor ${vendor.id || vendor.vendorId}`);
+    console.log(`   - Current services count: ${vendor.services ? vendor.services.length : 0}`);
+    console.log(`   - New service ID: ${serviceId}`);
+    console.log(`   - Updated services count will be: ${updatedServices.length}`);
+    
     // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, { services: updatedServices });
+    // Use vendorId if id is not available (ensure we use the correct key)
+    const vendorId = vendor.vendorId || vendor.id;
+    console.log(`   - Using vendorId for update: ${vendorId}`);
+    
+    await DynamoVendor.updateVendor(vendorId, { services: updatedServices });
 
     res.status(201).json({
       success: true,
@@ -290,7 +300,10 @@ export const updateService = async (req, res) => {
     updatedServices[serviceIndex] = updatedService;
     
     // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, { services: updatedServices });
+    // Use vendorId if id is not available (ensure we use the correct key)
+    const vendorId = vendor.vendorId || vendor.id;
+    console.log(`   - Updating services for vendor: ${vendorId}`);
+    await DynamoVendor.updateVendor(vendorId, { services: updatedServices });
 
     res.status(200).json({
       success: true,
@@ -374,7 +387,10 @@ export const deleteService = async (req, res) => {
     const updatedServices = vendor.services.filter(s => s.id !== serviceId);
     
     // Update the vendor in DynamoDB
-    await DynamoVendor.updateVendor(vendor.id, { services: updatedServices });
+    // Use vendorId if id is not available (ensure we use the correct key)
+    const vendorId = vendor.vendorId || vendor.id;
+    console.log(`   - Deleting service for vendor: ${vendorId}`);
+    await DynamoVendor.updateVendor(vendorId, { services: updatedServices });
 
     res.status(200).json({
       success: true,

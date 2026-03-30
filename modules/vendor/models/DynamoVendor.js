@@ -177,6 +177,16 @@ export const getVendorById = async (id) => {
     const result = await dynamoDB.get(params).promise();
     if (result.Item) {
       console.log(`Found vendor with ID: ${id}`);
+      
+      // DEBUG: Log services from DynamoDB
+      console.log(`🔍 DynamoDB Item retrieved - Services info:`);
+      console.log(`   - Item.services exists: ${!!result.Item.services}`);
+      console.log(`   - Item.services is array: ${Array.isArray(result.Item.services)}`);
+      console.log(`   - Item.services length: ${result.Item.services ? result.Item.services.length : 0}`);
+      if (result.Item.services && result.Item.services.length > 0) {
+        console.log(`   - Service keys in first service: ${Object.keys(result.Item.services[0]).join(', ')}`);
+      }
+      
       return {
         ...result.Item,
         _id: result.Item.vendorId // Add _id field for frontend compatibility
@@ -204,6 +214,15 @@ export const updateVendor = async (id, vendorData) => {
   
   if (!existingVendor) {
     throw new Error('Vendor not found');
+  }
+
+  // DEBUG: Log the update data
+  console.log(`📝 Updating vendor ${id}`);
+  if (vendorData.services) {
+    console.log(`   - Updating services array with ${vendorData.services.length} items`);
+    if (vendorData.services.length > 0) {
+      console.log(`   - Services detail: ${vendorData.services.map(s => `[${s.id || s.name}]`).join(', ')}`);
+    }
   }
 
   // Prepare update expression and attribute values
@@ -242,8 +261,13 @@ export const updateVendor = async (id, vendorData) => {
   };
 
   try {
+    console.log(`   - Update expression: ${updateExpression}`);
     const result = await dynamoDB.update(params).promise();
     if (result.Attributes) {
+      // DEBUG: Log the result
+      console.log(`✅ Update successful for vendor ${id}`);
+      console.log(`   - Services in result: ${result.Attributes.services ? result.Attributes.services.length : 0}`);
+      
       return {
         ...result.Attributes,
         _id: result.Attributes.vendorId // Add _id field for frontend compatibility

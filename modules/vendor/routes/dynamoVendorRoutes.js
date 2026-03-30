@@ -1,5 +1,7 @@
 import express from 'express';
 import multer from 'multer';
+import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcrypt';
 import { 
   submitVendorForm, 
   getVendors, 
@@ -22,6 +24,9 @@ import {
 import * as DynamoVendor from '../models/DynamoVendor.js';
 import * as DynamoGoogleUser from '../../../models/DynamoGoogleUser.js';
 import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
+import { listProductsByVendorId } from '../models/DynamoProducts.js';
+import { getPMProjectsByVendorId } from '../../pm/models/DynamoPMProject.js';
+import { getRevenueForecasting, getCohortAnalysis } from '../../workspace/controllers/subscriptionAnalyticsController.js';
 
 const router = express.Router();
 
@@ -381,6 +386,160 @@ router.get('/vendor/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching vendor',
+      error: error.message
+    });
+  }
+});
+
+// Get vendor for shared/public profile (for /shared-profile/:vendorId page)
+router.get('/shared/:vendorId', async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID is required'
+      });
+    }
+
+    console.log(`Fetching shared profile for vendor ID: ${vendorId}`);
+    const vendor = await DynamoVendor.getVendorById(vendorId);
+    
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found'
+      });
+    }
+
+    // DEBUG: Log services information
+    console.log(`📦 Vendor returned from getVendorById - Services info:`);
+    console.log(`   - vendor.services exists: ${!!vendor.services}`);
+    console.log(`   - vendor.services is array: ${Array.isArray(vendor.services)}`);
+    console.log(`   - vendor.services length: ${vendor.services ? vendor.services.length : 0}`);
+    if (vendor.services && vendor.services.length > 0) {
+      console.log(`   - First service: ${JSON.stringify(vendor.services[0], null, 2)}`);
+      console.log(`   - All service IDs: ${vendor.services.map(s => s.id || s.name).join(', ')}`);
+    }
+
+    // Fetch products for this vendor
+    const products = await listProductsByVendorId(vendorId);
+    console.log(`Found ${products ? products.length : 0} products for vendor ${vendorId}`);
+
+    // Fetch portfolio projects from vendor.projects (case studies)
+    const portfolioProjects = vendor.projects || [];
+    console.log(`Found ${portfolioProjects ? portfolioProjects.length : 0} portfolio projects for vendor ${vendorId}`);
+
+    // Fetch ongoing PM projects for this vendor with error handling
+    let ongoingProjects = [];
+    try {
+      ongoingProjects = await getPMProjectsByVendorId(vendorId);
+      console.log(`✅ Found ${ongoingProjects ? ongoingProjects.length : 0} ongoing PM projects for vendor ${vendorId}`);
+    } catch (pmError) {
+      console.error(`❌ Error fetching PM projects for vendor ${vendorId}:`, pmError.message);
+      // Continue with empty ongoing projects if fetch fails
+      ongoingProjects = [];
+    }
+
+    // Combine both types of projects: portfolio (case studies) + ongoing PM projects
+    const allProjects = [
+      ...portfolioProjects.map(p => ({ ...p, type: 'portfolio' })),
+      ...ongoingProjects.map(p => ({ ...p, type: 'ongoing' }))
+    ];
+    
+    console.log(`📊 Project summary: ${portfolioProjects.length} portfolio + ${ongoingProjects.length} ongoing = ${allProjects.length} total`);
+
+    // DEBUG: Log GST and PAN information
+    console.log(`💼 Vendor GST/PAN info:`, {
+      gstNumber: vendor.companyDetails?.gstNumber || 'NOT SET',
+      panNumber: vendor.companyDetails?.panNumber || 'NOT SET'
+    });
+
+    // Add products and combined projects to the vendor data before returning
+    const vendorWithData = {
+      ...vendor,
+      products: products || [],
+      projects: allProjects,
+      portfolioProjects: portfolioProjects,
+      ongoingProjects: ongoingProjects
+    };
+
+    // DEBUG: Log final response services
+    console.log(`📤 Final response - Services count: ${vendorWithData.services ? vendorWithData.services.length : 0}`);
+
+    // Return vendor data in the expected format for SharedProfile component
+    res.status(200).json({
+      success: true,
+      data: vendorWithData
+    });
+  } catch (error) {
+    console.error('Error fetching shared profile:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching shared profile',
+      error: error.message
+    });
+  }
+});
+
+// Save visitor information when they submit the shared profile form
+router.post('/save-visitor', async (req, res) => {
+  try {
+    const { vendorId, visitorName, visitorCompany, visitorPhone, visitorState, visitorCountry, visitedAt } = req.body;
+
+    if (!vendorId || !visitorName || !visitorCompany || !visitorPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required visitor information'
+      });
+    }
+
+    console.log(`Saving visitor for vendor ${vendorId}:`, { visitorName, visitorCompany, visitorPhone });
+
+    // Get the vendor
+    const vendor = await DynamoVendor.getVendorById(vendorId);
+    
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found'
+      });
+    }
+
+    // Initialize visitors array if it doesn't exist
+    if (!vendor.visitors) {
+      vendor.visitors = [];
+    }
+
+    // Add new visitor
+    const visitorRecord = {
+      id: `visitor_${Date.now()}`,
+      visitorName,
+      visitorCompany,
+      visitorPhone,
+      visitorState,
+      visitorCountry,
+      visitedAt: visitedAt || new Date().toISOString()
+    };
+
+    vendor.visitors.push(visitorRecord);
+
+    // Update vendor with new visitor data
+    const updatedVendor = await DynamoVendor.updateVendor(vendorId, {
+      visitors: vendor.visitors
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Visitor information saved successfully',
+      visitor: visitorRecord
+    });
+  } catch (error) {
+    console.error('Error saving visitor information:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error saving visitor information',
       error: error.message
     });
   }
@@ -1248,6 +1407,163 @@ router.put('/preferences', authenticateCognitoJwt, async (req, res) => {
   } catch (error) {
     console.error('Error updating preferences:', error);
     res.status(500).json({ success: false, message: 'Error updating preferences' });
+  }
+});
+
+/* ─── Change Password Endpoint ─────────────────────── */
+router.post('/change-password', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const vendorId = req.auth?.sub;
+
+    // Validation
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'All password fields are required'
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New passwords do not match'
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long'
+      });
+    }
+
+    if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || 
+        !/[0-9]/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must contain uppercase, lowercase, number, and special character'
+      });
+    }
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized - User not authenticated'
+      });
+    }
+
+    // Get vendor
+    const vendor = await DynamoVendor.getVendorById(vendorId);
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found'
+      });
+    }
+
+    // Verify current password
+    const storedHash = vendor.passwordHash;
+    if (!storedHash) {
+      return res.status(400).json({
+        success: false,
+        message: 'No password set for this account. Please use Google authentication or contact support.'
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(currentPassword, storedHash);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    // Hash new password
+    const salt = await bcrypt.genSalt(10);
+    const newPasswordHash = await bcrypt.hash(newPassword, salt);
+
+    // Update vendor with new password hash
+    await DynamoVendor.updateVendor(vendorId, {
+      passwordHash: newPasswordHash,
+      passwordUpdatedAt: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error changing password: ' + error.message
+    });
+  }
+});
+
+// Public Analytics Endpoints for Shared Profile (no authentication required)
+// Get subscription statistics for a vendor (public endpoint)
+router.get('/analytics/subscriptions/stats/:vendorId', async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID is required'
+      });
+    }
+
+    // Call the analytics controller with vendor context
+    const mockReq = {
+      user: {
+        vendorId: vendorId,
+        userType: 'public'
+      },
+      query: { vendorId }
+    };
+
+    return getRevenueForecasting(mockReq, res);
+  } catch (error) {
+    console.error('Error fetching subscription stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching subscription stats',
+      error: error.message
+    });
+  }
+});
+
+// Get revenue forecast for a vendor (public endpoint)
+router.get('/analytics/forecast/:vendorId', async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID is required'
+      });
+    }
+
+    // Call the analytics controller with vendor context
+    const mockReq = {
+      user: {
+        vendorId: vendorId,
+        userType: 'public'
+      },
+      query: { vendorId }
+    };
+
+    return getRevenueForecasting(mockReq, res);
+  } catch (error) {
+    console.error('Error fetching forecast:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching forecast',
+      error: error.message
+    });
   }
 });
 
