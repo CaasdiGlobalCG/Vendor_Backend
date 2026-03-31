@@ -560,6 +560,66 @@ router.get("/verify", async (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
+    const resolveMembershipContext = async () => {
+      try {
+        const { DynamoDBDocumentClient: DocClient, QueryCommand: QCmd, GetCommand: GCmd } = await import('@aws-sdk/lib-dynamodb');
+        const { DynamoDBClient: DDBClient } = await import('@aws-sdk/client-dynamodb');
+        const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+        const _doc = DocClient.from(_ddb);
+
+        const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
+        const ORGS_TABLE = process.env.RBAC_ORGANIZATIONS_TABLE || 'rbac_organizations';
+
+        const memberResult = await _doc.send(new QCmd({
+          TableName: MEMBERS_TABLE,
+          IndexName: 'EmailIndex',
+          KeyConditionExpression: 'email = :email',
+          ExpressionAttributeValues: { ':email': normalizedEmail },
+          ProjectionExpression: 'orgId, orgType, platformAccess, #s',
+          ExpressionAttributeNames: { '#s': 'status' },
+          Limit: 5,
+        }));
+
+        const activeMember = (memberResult.Items || []).find((m) => m.status === 'active');
+        if (!activeMember) {
+          return {
+            isMember: false,
+            memberOrgType: null,
+            platformAccess: null,
+          };
+        }
+
+        let memberOrgType = activeMember.orgType || null;
+        if (!memberOrgType && activeMember.orgId) {
+          try {
+            const orgResult = await _doc.send(new GCmd({
+              TableName: ORGS_TABLE,
+              Key: { orgId: activeMember.orgId },
+              ProjectionExpression: 'orgType',
+            }));
+            memberOrgType = orgResult.Item?.orgType || null;
+          } catch (e) {
+            console.warn('[verify] org type lookup failed:', e?.message);
+          }
+        }
+
+        return {
+          isMember: true,
+          memberOrgType: memberOrgType || 'vendor',
+          platformAccess: Array.isArray(activeMember.platformAccess) ? activeMember.platformAccess : null,
+        };
+      } catch (e) {
+        console.warn('[verify] resolveMembershipContext failed:', e?.message);
+        return {
+          isMember: false,
+          memberOrgType: null,
+          platformAccess: null,
+        };
+      }
+    };
+
+    const membershipContext = await resolveMembershipContext();
+
     const accessGate = await getVendorAccessGateByEmail(normalizedEmail);
     if (!accessGate.allowed) {
       return {
@@ -569,6 +629,7 @@ router.get("/verify", async (req, res) => {
         roleSelected: false,
         isTeamMember: false,
         platformAccess: [],
+        orgType: membershipContext.memberOrgType,
         accessDenied: {
           code: accessGate.code || 'RBAC_001',
           message: accessGate.message || 'Your access has been revoked.',
@@ -608,40 +669,8 @@ router.get("/verify", async (req, res) => {
         let isMember = false;
         let memberOrgType = null;
         if (!vendorRecord) {
-          try {
-            const { DynamoDBDocumentClient: DocClient, QueryCommand: QCmd } = await import('@aws-sdk/lib-dynamodb');
-            const { DynamoDBClient: DDBClient } = await import('@aws-sdk/client-dynamodb');
-            const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
-            const _doc = DocClient.from(_ddb);
-            const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
-
-            const memberResult = await _doc.send(new QCmd({
-              TableName: MEMBERS_TABLE,
-              IndexName: 'EmailIndex',
-              KeyConditionExpression: 'email = :email',
-              ExpressionAttributeValues: { ':email': normalizedEmail },
-              ProjectionExpression: 'orgId, #s',
-              ExpressionAttributeNames: { '#s': 'status' },
-              Limit: 1,
-            }));
-            const activeMember = memberResult.Items?.find(m => m.status === 'active');
-            if (activeMember) {
-              isMember = true;
-              // Determine orgType from rbac_organizations
-              try {
-                const { GetCommand: GCmd } = await import('@aws-sdk/lib-dynamodb');
-                const ORGS_TABLE = process.env.RBAC_ORGANIZATIONS_TABLE || 'rbac_organizations';
-                const orgResult = await _doc.send(new GCmd({
-                  TableName: ORGS_TABLE,
-                  Key: { orgId: activeMember.orgId },
-                  ProjectionExpression: 'orgType',
-                }));
-                memberOrgType = orgResult.Item?.orgType || 'vendor';
-              } catch { memberOrgType = 'vendor'; }
-            }
-          } catch (e) {
-            console.warn('[verify] rbac_members check failed:', e?.message);
-          }
+          isMember = membershipContext.isMember;
+          memberOrgType = membershipContext.memberOrgType;
         }
 
         userRecord = await DynamoUser.createUser({
@@ -692,32 +721,11 @@ router.get("/verify", async (req, res) => {
 
       // If the record doesn't have isTeamMember, check rbac_members directly
       if (!isKnownTeamMember) {
-        try {
-          const { DynamoDBDocumentClient: DocClient, QueryCommand: QCmd } = await import('@aws-sdk/lib-dynamodb');
-          const { DynamoDBClient: DDBClient } = await import('@aws-sdk/client-dynamodb');
-          const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
-          const _doc = DocClient.from(_ddb);
-          const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
-
-          const memberCheck = await _doc.send(new QCmd({
-            TableName: MEMBERS_TABLE,
-            IndexName: 'EmailIndex',
-            KeyConditionExpression: 'email = :email',
-            ExpressionAttributeValues: { ':email': normalizedEmail },
-            ProjectionExpression: 'orgId, #s, orgType',
-            ExpressionAttributeNames: { '#s': 'status' },
-            Limit: 5,
-          }));
-          const activeMember = (memberCheck.Items || []).find(m => m.status === 'active');
-          if (activeMember) {
-            isKnownTeamMember = true;
-            // Determine orgType for lastSelectedRole
-            if (!userRecord.lastSelectedRole && activeMember.orgType) {
-              userRecord.lastSelectedRole = activeMember.orgType;
-            }
+        if (membershipContext.isMember) {
+          isKnownTeamMember = true;
+          if (!userRecord.lastSelectedRole && membershipContext.memberOrgType) {
+            userRecord.lastSelectedRole = membershipContext.memberOrgType;
           }
-        } catch (e) {
-          console.warn('[verify] rbac_members fallback check failed:', e?.message);
         }
       }
 
@@ -746,27 +754,8 @@ router.get("/verify", async (req, res) => {
     // Org owners who have been backfilled will have a member record with platformAccess.
     // Non-team non-backfilled users default to all platforms.
     let platformAccess = null;
-    try {
-      const { DynamoDBDocumentClient: DocClient2, QueryCommand: QCmd2 } = await import('@aws-sdk/lib-dynamodb');
-      const { DynamoDBClient: DDBClient2 } = await import('@aws-sdk/client-dynamodb');
-      const _ddb2 = new DDBClient2({ region: process.env.AWS_REGION || 'us-east-1' });
-      const _doc2 = DocClient2.from(_ddb2);
-      const MEMBERS_TABLE2 = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
-      const memberPAResult = await _doc2.send(new QCmd2({
-        TableName: MEMBERS_TABLE2,
-        IndexName: 'EmailIndex',
-        KeyConditionExpression: 'email = :email',
-        ExpressionAttributeValues: { ':email': normalizedEmail },
-        ProjectionExpression: 'platformAccess, #s',
-        ExpressionAttributeNames: { '#s': 'status' },
-        Limit: 5,
-      }));
-      const activeMemberPA = (memberPAResult.Items || []).find(m => m.status === 'active');
-      if (activeMemberPA && Array.isArray(activeMemberPA.platformAccess)) {
-        platformAccess = activeMemberPA.platformAccess;
-      }
-    } catch (e) {
-      console.warn('[verify] platformAccess lookup failed:', e?.message);
+    if (Array.isArray(membershipContext.platformAccess)) {
+      platformAccess = membershipContext.platformAccess;
     }
     // Default: org owners without rbac_members record get all platforms
     if (!platformAccess) {
@@ -780,6 +769,7 @@ router.get("/verify", async (req, res) => {
       roleSelected,
       isTeamMember,
       platformAccess,
+      orgType: membershipContext.memberOrgType,
       source: 'users'
     };
   };
