@@ -217,6 +217,7 @@ async function loadModules() {
     app.use('/api/referral-leads', vendorModule.referralLeadRoutes);
     app.use('/api/vendor', vendorModule.productRoutes); // Product routes
     app.use('/api/vendor', vendorModule.serviceRoutes); // Service routes
+    app.use('/api/vendor/mfa', vendorModule.mfaRoutes); // MFA routes
     console.log('✅ Vendor Module loaded');
 
     // Load Workspace Module
@@ -264,9 +265,14 @@ async function loadModules() {
 
     // Load AI Module
     console.log('🔄 Loading AI Module...');
-    const aiModule = await import('./modules/ai/index.js');
-    app.use('/api/ai', aiModule.aiRoutes);
-    console.log('✅ AI Module loaded');
+    try {
+      const aiModule = await import('./modules/ai/index.js');
+      app.use('/api/ai', aiModule.aiRoutes);
+      console.log('✅ AI Module loaded');
+    } catch (aiErr) {
+      console.warn('⚠️ AI Module failed to load (non-critical):', aiErr.message);
+      console.warn('   Continuing without AI features...');
+    }
 
     // Load Support Module
     console.log('🔄 Loading Support Module...');

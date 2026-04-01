@@ -344,9 +344,19 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
       vendor.hasFilledForm = computedHasFilledForm;
     }
 
+    // ─────────────────────────────────────────────
+    // Include MFA status in vendor response
+    // ─────────────────────────────────────────────
+    const vendorResponse = {
+      ...vendor,
+      totpEnabled: vendor.totpEnabled === true,
+      passkeyEnabled: vendor.passkeyEnabled === true,
+      mfaEnabled: (vendor.totpEnabled === true) || (vendor.passkeyEnabled === true)
+    };
+
     return res.status(200).json({
       success: true,
-      data: vendor
+      data: vendorResponse
     });
   } catch (error) {
     console.error('Error fetching current vendor:', error);
