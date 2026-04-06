@@ -27,6 +27,7 @@ import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware
 import { listProductsByVendorId } from '../models/DynamoProducts.js';
 import { getPMProjectsByVendorId } from '../../pm/models/DynamoPMProject.js';
 import { getRevenueForecasting, getCohortAnalysis } from '../../workspace/controllers/subscriptionAnalyticsController.js';
+import { generateSharedProfilePdf } from '../services/sharedProfilePdfService.js';
 
 const router = express.Router();
 
@@ -488,6 +489,39 @@ router.get('/shared/:vendorId', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching shared profile',
+      error: error.message
+    });
+  }
+});
+
+router.get('/shared/:vendorId/pdf', async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID is required'
+      });
+    }
+
+    const pdfBuffer = await generateSharedProfilePdf({
+      vendorId,
+      requestOrigin: req.get('origin'),
+      requestReferer: req.get('referer'),
+      query: req.query
+    });
+
+    const fileName = `${vendorId}_Portfolio.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.status(200).send(pdfBuffer);
+  } catch (error) {
+    console.error('Error generating shared profile PDF:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error generating shared profile PDF',
       error: error.message
     });
   }
