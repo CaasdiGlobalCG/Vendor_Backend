@@ -12,6 +12,7 @@ import { getMyRBAC } from '../controllers/meController.js';
 import { listMembers, inviteMember, changeMemberRole, removeMember, suspendMember, unsuspendMember, updateMemberAccessScopes } from '../controllers/membersController.js';
 import { listRoles, getRoleDetails, createRole, updateRole, deleteRole } from '../controllers/rolesController.js';
 import { listInvitations, cancelInvitation } from '../controllers/invitationsController.js';
+import { validateInviteToken, acceptInvitation } from '../controllers/inviteAcceptController.js';
 import { getAuditLogs } from '../controllers/auditLogController.js';
 import { listPermissions, listPlatforms } from '../controllers/permissionsController.js';
 import { attachRBAC } from '../middleware/attachRBAC.js';
@@ -20,6 +21,18 @@ import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware
 import { attachVendorId } from '../../../middleware/attachVendorId.js';
 
 const router = Router();
+
+// ──────────────────────────────────────
+// Public invite routes (must stay unauthenticated)
+// Keep these before auth middleware to guarantee invite acceptance
+// works even if mount order differs across environments.
+// ──────────────────────────────────────
+
+/** GET /api/rbac/invite/validate?token=... */
+router.get('/invite/validate', validateInviteToken);
+
+/** POST /api/rbac/invite/accept */
+router.post('/invite/accept', acceptInvitation);
 
 // ──────────────────────────────────────
 // Auth → VendorId → RBAC pipeline applied to all RBAC routes.

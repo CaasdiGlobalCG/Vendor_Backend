@@ -62,6 +62,8 @@ authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 ## API Routes
 | Method | Path | Description | Permission |
 |--------|------|-------------|------------|
+| GET | `/api/rbac/invite/validate` | Public invite token validation | Public (no auth) |
+| POST | `/api/rbac/invite/accept` | Public invite acceptance | Public (no auth) |
 | GET | `/api/rbac/me` | Current user's RBAC context | (auth only) |
 | GET | `/api/rbac/members` | List org members | user_management:view |
 | POST | `/api/rbac/members/invite` | Invite member by email | user_management:create |
@@ -71,6 +73,10 @@ authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 | GET | `/api/rbac/roles` | List roles + canAssign | user_management:view |
 | GET | `/api/rbac/invitations` | List invitations | user_management:view |
 | DELETE | `/api/rbac/invitations/:inviteId` | Cancel invitation | user_management:edit |
+
+### Invite Route Isolation Guardrail
+- Public invite routes are declared before `router.use(authenticateCognitoJwt)` inside `modules/rbac/routes/rbacRoutes.js`.
+- This makes `/api/rbac/invite/validate` and `/api/rbac/invite/accept` stay public even if environment-specific server mount order differs.
 
 ## Extended Enforcement Coverage (Phase 5)
 RBAC now protects vendor lead operations in `modules/vendor/routes/vendorLeadRoutes.js` via:
