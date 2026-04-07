@@ -37,6 +37,10 @@ import sendProgressEmailRoutes from './routes/sendProgressEmail.js'; // Import s
 import handoffRoutes from './routes/handoffRoutes.js'; // Import handoff routes for vendor-to-client switching
 import vendorTendersRoute from './routes/vendorTendersRoute.js'; // Proxy: fetch vendor tenders from Sales Backend
 import webhookRoutes from './modules/workflow/routes/webhookRoutes.js';
+import * as DynamoVendor from './modules/vendor/models/DynamoVendor.js';
+import { listProductsByVendorId } from './modules/vendor/models/DynamoProducts.js';
+import { getPMProjectsByVendorId } from './modules/pm/models/DynamoPMProject.js';
+import { generateSharedProfilePdf } from './modules/vendor/services/sharedProfilePdfService.js';
 import { sendWorkflowEmail } from './modules/workflow/services/emailNotificationService.js';
 import {
   createTaskInWorkspace,
@@ -64,8 +68,8 @@ import { errorLogger } from './modules/logging/middleware/errorLogger.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.VENDOR_BACKEND_PORT;
 const isProd = process.env.NODE_ENV === 'production';
+const PORT = process.env.VENDOR_BACKEND_PORT || (isProd ? '' : '5001');
 
 // Default action service adapters for workflow executor.
 app.locals.actionServices = {
@@ -175,6 +179,97 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Public shared vendor profile endpoint.
+// This is registered at the app level to keep shared-profile access outside
+// the authenticated /api/vendor router stack.
+app.get('/api/vendor/shared/:vendorId', async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID is required'
+      });
+    }
+
+    const vendor = await DynamoVendor.getVendorById(vendorId);
+
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found'
+      });
+    }
+
+    const products = await listProductsByVendorId(vendorId);
+    const portfolioProjects = vendor.projects || [];
+
+    let ongoingProjects = [];
+    try {
+      ongoingProjects = await getPMProjectsByVendorId(vendorId);
+    } catch (pmError) {
+      console.error(`Error fetching PM projects for shared vendor ${vendorId}:`, pmError.message);
+    }
+
+    const allProjects = [
+      ...portfolioProjects.map((project) => ({ ...project, type: 'portfolio' })),
+      ...ongoingProjects.map((project) => ({ ...project, type: 'ongoing' }))
+    ];
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...vendor,
+        products: products || [],
+        projects: allProjects,
+        portfolioProjects,
+        ongoingProjects
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching shared profile:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching shared profile',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/vendor/shared/:vendorId/pdf', async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vendor ID is required'
+      });
+    }
+
+    const pdfBuffer = await generateSharedProfilePdf({
+      vendorId,
+      requestOrigin: req.get('origin'),
+      requestReferer: req.get('referer'),
+      query: req.query
+    });
+
+    const fileName = `${vendorId}_Portfolio.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.status(200).send(pdfBuffer);
+  } catch (error) {
+    console.error('Error generating shared profile PDF:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error generating shared profile PDF',
+      error: error.message
+    });
+  }
+});
+
 // Lightweight fallback route for workspace purchase orders
 // This guarantees /api/workspace/purchase-orders exists even if
 // modular workspace routers are not mounted correctly in some envs.
@@ -217,6 +312,7 @@ async function loadModules() {
     app.use('/api/referral-leads', vendorModule.referralLeadRoutes);
     app.use('/api/vendor', vendorModule.productRoutes); // Product routes
     app.use('/api/vendor', vendorModule.serviceRoutes); // Service routes
+    app.use('/api/vendor/mfa', vendorModule.mfaRoutes); // MFA routes
     console.log('✅ Vendor Module loaded');
 
     // Load Workspace Module
@@ -264,9 +360,14 @@ async function loadModules() {
 
     // Load AI Module
     console.log('🔄 Loading AI Module...');
-    const aiModule = await import('./modules/ai/index.js');
-    app.use('/api/ai', aiModule.aiRoutes);
-    console.log('✅ AI Module loaded');
+    try {
+      const aiModule = await import('./modules/ai/index.js');
+      app.use('/api/ai', aiModule.aiRoutes);
+      console.log('✅ AI Module loaded');
+    } catch (aiErr) {
+      console.warn('⚠️ AI Module failed to load (non-critical):', aiErr.message);
+      console.warn('   Continuing without AI features...');
+    }
 
     // Load Support Module
     console.log('🔄 Loading Support Module...');

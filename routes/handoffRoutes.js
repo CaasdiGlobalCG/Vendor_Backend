@@ -348,6 +348,102 @@ router.post('/logout', async (req, res) => {
   return res.json({ success: true });
 });
 
+// POST /api/auth/logout/all-devices
+// Global sign out - Signs out user from ALL devices by invalidating their Cognito session
+router.post('/logout/all-devices', async (req, res) => {
+  try {
+    // Get the auth token from request
+    const token = await getAuthTokenFromRequestOrBody(req);
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Not authenticated' });
+    }
+
+    // Verify the token is valid
+    const decoded = await verifyCognitoToken(token);
+    const email = decoded?.email;
+    const username = decoded?.username || decoded?.preferred_username || email;
+
+    if (!username) {
+      return res.status(400).json({ success: false, message: 'Could not determine user' });
+    }
+
+    // Import Cognito client
+    const { cognito } = await import('../config/aws.js');
+
+    // Get the Cognito User Pool ID from environment
+    const userPoolId = process.env.AWS_COGNITO_USER_POOL_ID;
+    if (!userPoolId) {
+      console.error('AWS_COGNITO_USER_POOL_ID not configured');
+      return res.status(500).json({ success: false, message: 'Server configuration error' });
+    }
+
+    // Call AdminUserGlobalSignOut to invalidate all tokens
+    await cognito.adminUserGlobalSignOut({
+      UserPoolId: userPoolId,
+      Username: username
+    }).promise();
+
+    // Clear the local cookie as well
+    const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+    const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
+    let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';
+    let secure = sameSite === 'None';
+
+    const host = String(req.hostname || '').toLowerCase();
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    if (isLocalhost && sameSite === 'None') {
+      sameSite = 'Lax';
+      secure = false;
+    }
+
+    const configuredDomain = process.env.VENDOR_AUTH_COOKIE_DOMAIN || '';
+    const reqHost = String(req.hostname || '');
+    let cookieDomain;
+    if (configuredDomain) {
+      const normalized = configuredDomain.startsWith('.') ? configuredDomain.slice(1) : configuredDomain;
+      if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.clearCookie(cookieName, {
+      httpOnly: true,
+      secure,
+      sameSite,
+      domain: cookieDomain || undefined,
+      path: '/',
+    });
+
+    // Log security event
+    await logSecurityEvent({
+      action: SECURITY_ACTIONS.GLOBAL_SIGNOUT,
+      userId: username,
+      email: email,
+      status: 'SUCCESS',
+      meta: { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent') }
+    });
+
+    return res.json({ 
+      success: true, 
+      message: 'Signed out from all devices successfully' 
+    });
+  } catch (err) {
+    console.error('[auth/logout/all-devices] Error:', err?.message || err);
+
+    // Handle specific Cognito errors
+    if (err.code === 'UserNotFoundException') {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (err.code === 'InvalidParameterException') {
+      return res.status(400).json({ success: false, message: 'Invalid parameters' });
+    }
+
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Failed to sign out from all devices' 
+    });
+  }
+});
+
 // POST /api/auth/handoff
 // Creates a one-time code that the client app can exchange for the JWT.
 router.post('/handoff', async (req, res) => {
