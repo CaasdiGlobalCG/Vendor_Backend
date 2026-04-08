@@ -5,7 +5,9 @@ import { attachVendorId } from '../../../middleware/attachVendorId.js';
 import {
   createTicket,
   listMyTickets,
+  listReferenceOptions,
   getTicket,
+  getTicketReference,
   addMessage,
   rateTicket,
   reopenTicket,
@@ -21,9 +23,11 @@ const upload = multer({
 router.use(authenticateCognitoJwt);
 router.use(attachVendorId);
 
+router.get('/reference-options',                                       listReferenceOptions);
 router.post('/',                          upload.array('files', 10), createTicket);
 router.get('/',                                                       listMyTickets);
 router.get('/:ticketId',                                              getTicket);
+router.get('/:ticketId/reference',                                    getTicketReference);
 router.post('/:ticketId/messages',        upload.array('files', 5),  addMessage);
 router.put('/:ticketId/rate',                                         rateTicket);
 router.put('/:ticketId/reopen',                                       reopenTicket);
