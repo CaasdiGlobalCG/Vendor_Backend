@@ -290,6 +290,16 @@ app.use('/api/ocr', ocrRoutes); // OCR routes for cheque processing
 // === Load Modular Routes ===
 async function loadModules() {
   try {
+    // ── PUBLIC: Invite accept routes (must be FIRST in loadModules) ──────────
+    // dynamoProjectRoutes (PM) and dynamoWorkspaceRoutes are mounted at /api
+    // with router.use(authenticateCognitoJwt). Because app.use('/api', router)
+    // prefix-matches /api/rbac/invite/*, those routers intercept unauthenticated
+    // invite requests and return 401 before invite routes are ever reached.
+    // Registering the public invite router here — before PM/Workspace load —
+    // ensures it is first in Express's route stack for /api/rbac/invite/*.
+    const { default: invitePublicRouter } = await import('./modules/rbac/routes/invitePublicRoutes.js');
+    app.use('/api/rbac/invite', invitePublicRouter);
+
     // Load PM Module
     console.log('🔄 Loading PM Module...');
     const pmModule = await import('./modules/pm/index.js');
@@ -344,10 +354,8 @@ async function loadModules() {
     // Load RBAC Module (strict enforcement mode)
     console.log('🔄 Loading RBAC Module...');
     const rbacModule = await import('./modules/rbac/index.js');
-    // Public invite routes FIRST — no auth required (invitee has no account yet).
-    // Must be mounted before /api/rbac so the auth middleware on rbacRoutes
-    // doesn't intercept /api/rbac/invite/* requests with a 401.
-    app.use('/api/rbac/invite', rbacModule.invitePublicRoutes);
+    // Note: invitePublicRoutes is already mounted at the top of loadModules.
+    // Only mount the authenticated RBAC router here.
     app.use('/api/rbac', rbacModule.rbacRoutes);
     rbacModule.initializeSuspensionScheduler();
     console.log('✅ RBAC Module loaded (strict enforcement mode)');
