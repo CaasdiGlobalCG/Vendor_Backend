@@ -77,6 +77,8 @@ authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
 ### Invite Route Isolation Guardrail
 - Public invite routes are declared before `router.use(authenticateCognitoJwt)` inside `modules/rbac/routes/rbacRoutes.js`.
 - This makes `/api/rbac/invite/validate` and `/api/rbac/invite/accept` stay public even if environment-specific server mount order differs.
+- Additional aliases now exist for both mount shapes (`/api/rbac` and `/api/rbac/invite`) so invite endpoints resolve correctly in either setup.
+- `middleware/cognitoJwtMiddleware.js` now explicitly bypasses auth for invite validate/accept URLs, guaranteeing those routes never require a current authenticated user.
 
 ## Extended Enforcement Coverage (Phase 5)
 RBAC now protects vendor lead operations in `modules/vendor/routes/vendorLeadRoutes.js` via:
