@@ -444,6 +444,7 @@ async function createNewCollaborativeWorkspace(projectId, pmId, vendorId, leadId
     const workspaceData = {
       workspaceId,
       projectId,
+      leadId: leadId || null,
       title: `${project?.name || 'Project'} - Collaborative Workspace`,
       description: `PM-Vendor collaborative workspace for ${project?.name || 'project'}`,
       

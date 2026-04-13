@@ -3,7 +3,8 @@ import {
   createProcurementRequest,
   getProcurementRequests,
   getProcurementRequestById,
-  updateProcurementRequest
+  updateProcurementRequest,
+  getCrmOrders
 } from '../controllers/procurementRequestsController.js';
 import { authenticateUser } from '../../../middleware/authMiddleware.js';
 
@@ -49,6 +50,18 @@ router.use(authenticateUser);
  *               workspaceId:
  *                 type: string
  *                 description: Workspace ID
+ *               taskId:
+ *                 type: string
+ *                 description: Task ID in workspace
+ *               subtaskId:
+ *                 type: string
+ *                 description: Subtask ID in workspace
+ *               taskName:
+ *                 type: string
+ *                 description: Task name in workspace
+ *               subtaskName:
+ *                 type: string
+ *                 description: Subtask name in workspace
  *               source:
  *                 type: string
  *                 default: workspace
@@ -91,6 +104,16 @@ router.post('/', createProcurementRequest);
  *         schema:
  *           type: string
  *         description: Filter by source
+ *       - in: query
+ *         name: taskId
+ *         schema:
+ *           type: string
+ *         description: Filter by task ID
+ *       - in: query
+ *         name: subtaskId
+ *         schema:
+ *           type: string
+ *         description: Filter by subtask ID
  *     responses:
  *       200:
  *         description: List of procurement requests
@@ -98,6 +121,38 @@ router.post('/', createProcurementRequest);
  *         description: Internal server error
  */
 router.get('/', getProcurementRequests);
+
+/**
+ * @swagger
+ * /api/procurement-requests/crm-orders:
+ *   get:
+ *     summary: Get CRM orders with full pipeline status
+ *     tags: [Procurement Requests]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: workspaceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: taskId
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: subtaskId
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: CRM orders with pipeline status
+ *       400:
+ *         description: Missing workspaceId
+ *       500:
+ *         description: Internal server error
+ */
+router.get('/crm-orders', getCrmOrders);
 
 /**
  * @swagger

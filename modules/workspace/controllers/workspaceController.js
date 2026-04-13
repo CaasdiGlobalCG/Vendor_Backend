@@ -1399,7 +1399,12 @@ const createPurchaseOrderFromQuote = async (req, res) => {
       subtaskId,
       subtaskName,
       clientId: clientIdFromBody,
-      pdfUrl
+      pdfUrl,
+      poPdfUrl,
+      finalQuotationPdfUrl,
+      sourceType,
+      sourceOrderId,
+      poDispatchTarget
     } = req.body;
 
     const userRole = req.user?.role;
@@ -1505,6 +1510,11 @@ const createPurchaseOrderFromQuote = async (req, res) => {
       subtaskId: subtaskId || null,
       subtaskName: subtaskName || '',
       pdfUrl: pdfUrl || null,
+      poPdfUrl: poPdfUrl || pdfUrl || null,
+      finalQuotationPdfUrl: finalQuotationPdfUrl || null,
+      sourceType: sourceType || null,
+      sourceOrderId: sourceOrderId || null,
+      poDispatchTarget: poDispatchTarget || null,
       createdAt,
       updatedAt: createdAt
     };

@@ -130,8 +130,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-user-info']
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Workspace snapshot thumbnails are sent as base64 payloads, which can exceed the default 100kb parser limit.
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // Request logger: assigns req.requestId + structured JSON console output
 // Must be BEFORE all routes so every request gets a requestId
@@ -387,6 +388,10 @@ async function loadModules() {
     
     // Initialize subscription scheduler
     initializeSubscriptionScheduler();
+
+    // Initialize marketing email scheduler (daily promotions, weekly newsletter)
+    const { initializeMarketingScheduler } = await import('./modules/vendor/services/marketingScheduler.js');
+    initializeMarketingScheduler();
 
     // Initialize AI scheduled reports & reminders cron
     const { initializeSchedulerCron } = await import('./modules/ai/services/schedulerCron.js');

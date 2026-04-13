@@ -28,6 +28,7 @@ import { listProductsByVendorId } from '../models/DynamoProducts.js';
 import { getPMProjectsByVendorId } from '../../pm/models/DynamoPMProject.js';
 import { getRevenueForecasting, getCohortAnalysis } from '../../workspace/controllers/subscriptionAnalyticsController.js';
 import { generateSharedProfilePdf } from '../services/sharedProfilePdfService.js';
+import { processUnsubscribe, sendProductUpdate } from '../services/marketingEmailService.js';
 
 const router = express.Router();
 
@@ -1403,7 +1404,7 @@ router.delete('/projects/:id', async (req, res) => {
 // ─── GET /preferences ─── Fetch vendor email/notification preferences
 router.get('/preferences', authenticateCognitoJwt, async (req, res) => {
   try {
-    const email = req.user?.email;
+    const email = req.auth?.email;
     if (!email) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const vendor = await DynamoVendor.getVendorByEmail(email);
@@ -1412,6 +1413,7 @@ router.get('/preferences', authenticateCognitoJwt, async (req, res) => {
     res.json({
       success: true,
       emailPreferences: vendor.emailPreferences || {},
+      smsPreferences: vendor.smsPreferences || {},
     });
   } catch (error) {
     console.error('Error fetching preferences:', error);
@@ -1422,32 +1424,48 @@ router.get('/preferences', authenticateCognitoJwt, async (req, res) => {
 // ─── PUT /preferences ─── Update vendor email/notification preferences
 router.put('/preferences', authenticateCognitoJwt, async (req, res) => {
   try {
-    const email = req.user?.email;
+    const email = req.auth?.email;
     if (!email) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const vendor = await DynamoVendor.getVendorByEmail(email);
     if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
 
-    const { emailPreferences } = req.body;
-    if (!emailPreferences || typeof emailPreferences !== 'object') {
-      return res.status(400).json({ success: false, message: 'Invalid preferences payload' });
-    }
+    const { emailPreferences, smsPreferences } = req.body;
 
-    // Only allow boolean values for known preference keys
-    const allowedKeys = [
-      'orderNotifications', 'promotions', 'newsletter', 'updates',
-      'leadAlerts', 'quotationAlerts', 'systemAlerts',
-    ];
-    const sanitized = {};
-    for (const key of allowedKeys) {
-      if (key in emailPreferences) {
-        sanitized[key] = Boolean(emailPreferences[key]);
+    const updateData = {};
+
+    if (emailPreferences && typeof emailPreferences === 'object') {
+      const allowedEmailKeys = [
+        'orderNotifications', 'promotions', 'newsletter', 'updates',
+        'leadAlerts', 'quotationAlerts', 'systemAlerts',
+      ];
+      const sanitizedEmail = {};
+      for (const key of allowedEmailKeys) {
+        if (key in emailPreferences) {
+          sanitizedEmail[key] = Boolean(emailPreferences[key]);
+        }
       }
+      updateData.emailPreferences = sanitizedEmail;
     }
 
-    await DynamoVendor.updateVendor(vendor.id, { emailPreferences: sanitized });
+    if (smsPreferences && typeof smsPreferences === 'object') {
+      const allowedSmsKeys = ['orderAlerts', 'leadAlerts', 'securityAlerts'];
+      const sanitizedSms = {};
+      for (const key of allowedSmsKeys) {
+        if (key in smsPreferences) {
+          sanitizedSms[key] = Boolean(smsPreferences[key]);
+        }
+      }
+      updateData.smsPreferences = sanitizedSms;
+    }
 
-    res.json({ success: true, message: 'Preferences updated', emailPreferences: sanitized });
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid preferences provided' });
+    }
+
+    await DynamoVendor.updateVendor(vendor.vendorId, updateData);
+
+    res.json({ success: true, message: 'Preferences updated', ...updateData });
   } catch (error) {
     console.error('Error updating preferences:', error);
     res.status(500).json({ success: false, message: 'Error updating preferences' });
@@ -1610,5 +1628,106 @@ router.get('/analytics/forecast/:vendorId', async (req, res) => {
     });
   }
 });
+
+// ==================== MARKETING EMAIL ENDPOINTS ====================
+
+// Public unsubscribe endpoint (no auth - accessed from email link)
+router.get('/unsubscribe', async (req, res) => {
+  try {
+    const { token } = req.query;
+
+    if (!token) {
+      return res.status(400).send(buildUnsubscribePage('Missing Token', 'The unsubscribe link is invalid or incomplete.', false));
+    }
+
+    const result = await processUnsubscribe(token);
+
+    if (result.success) {
+      return res.status(200).send(buildUnsubscribePage('Unsubscribed Successfully', `You have been unsubscribed from ${formatPreferenceKey(result.preference)} emails. You can re-enable this anytime from your notification settings.`, true));
+    } else {
+      return res.status(400).send(buildUnsubscribePage('Unsubscribe Failed', result.message || 'Could not process your request. The link may have expired.', false));
+    }
+  } catch (error) {
+    console.error('Unsubscribe error:', error);
+    return res.status(500).send(buildUnsubscribePage('Something Went Wrong', 'We could not process your request. Please try again later or update your preferences from your account settings.', false));
+  }
+});
+
+// Protected endpoint to trigger product update emails
+router.post('/send-product-update', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const { title, features, version } = req.body;
+
+    if (!title || !features || !Array.isArray(features) || features.length === 0 || !version) {
+      return res.status(400).json({
+        success: false,
+        message: 'title, features (non-empty array), and version are required'
+      });
+    }
+
+    const result = await sendProductUpdate({ title, features, version });
+
+    return res.status(200).json({
+      success: true,
+      message: `Product update emails sent to ${result.sent} vendors`,
+      sent: result.sent,
+      failed: result.failed
+    });
+  } catch (error) {
+    console.error('Product update email error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to send product update emails',
+      error: error.message
+    });
+  }
+});
+
+// Helper: format preference key for display
+function formatPreferenceKey(key) {
+  const map = {
+    promotions: 'Promotions & Deals',
+    newsletter: 'Weekly Newsletter',
+    productUpdates: 'Product & Platform Updates'
+  };
+  return map[key] || key;
+}
+
+// Helper: build unsubscribe confirmation HTML page
+function buildUnsubscribePage(title, message, success) {
+  const iconColor = success ? '#22c55e' : '#ef4444';
+  const icon = success
+    ? '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="' + iconColor + '" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'
+    : '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="' + iconColor + '" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} - Caasdi Global</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1e293b; border-radius: 16px; padding: 48px; max-width: 480px; width: 90%; text-align: center; box-shadow: 0 25px 50px rgba(0,0,0,0.25); }
+    .icon { margin-bottom: 24px; }
+    h1 { font-size: 24px; margin-bottom: 12px; color: #f8fafc; }
+    p { font-size: 16px; line-height: 1.6; color: #94a3b8; margin-bottom: 32px; }
+    .btn { display: inline-block; padding: 12px 32px; background: #3b82f6; color: white; text-decoration: none; border-radius: 8px; font-weight: 500; transition: background 0.2s; }
+    .btn:hover { background: #2563eb; }
+    .footer { margin-top: 32px; font-size: 13px; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">${icon}</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <a href="https://www.caasdiglobal.in" class="btn">Go to Caasdi Global</a>
+    <div class="footer">&copy; ${new Date().getFullYear()} Caasdi Global. All rights reserved.</div>
+  </div>
+</body>
+</html>`;
+}
 
 export default router;
