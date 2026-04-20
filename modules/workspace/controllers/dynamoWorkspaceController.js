@@ -277,7 +277,7 @@ export const updateWorkspace = async (req, res) => {
 export const saveWorkspaceCanvas = async (req, res) => {
   try {
     const { id } = req.params;
-    const { nodes, edges, layers, zoomLevel, canvasSettings } = req.body;
+    const { nodes, edges, layers, zoomLevel, canvasSettings, previewSnapshot } = req.body;
     const actionServices = req.app?.locals?.actionServices;
     
     console.log('🔄 Backend: saveWorkspaceCanvas called', {
@@ -287,7 +287,8 @@ export const saveWorkspaceCanvas = async (req, res) => {
         edgesCount: edges?.length || 0,
         layersCount: layers?.length || 0,
         zoomLevel,
-        hasCanvasSettings: !!canvasSettings
+        hasCanvasSettings: !!canvasSettings,
+        hasPreviewSnapshot: Boolean(previewSnapshot)
       }
     });
     
@@ -316,7 +317,8 @@ export const saveWorkspaceCanvas = async (req, res) => {
       edges: edges || [],
       layers: layers || [],
       zoomLevel: zoomLevel || 100,
-      canvasSettings: canvasSettings || {}
+      canvasSettings: canvasSettings || {},
+      previewSnapshot: previewSnapshot || existingWorkspace.previewSnapshot || null
     };
     
     console.log('💾 Backend: Prepared workspace data for save:', {
@@ -699,7 +701,7 @@ export const updateSubtaskInTask = async (req, res) => {
 export const updateSubtaskCanvas = async (req, res) => {
   try {
     const { id, taskId, subtaskId } = req.params;
-    const { nodes, edges, zoomLevel } = req.body;
+    const { nodes, edges, zoomLevel, previewSnapshot } = req.body;
     const actionServices = req.app?.locals?.actionServices;
     
     console.log('🔄 Backend: Updating subtask canvas', { 
@@ -707,7 +709,8 @@ export const updateSubtaskCanvas = async (req, res) => {
       taskId, 
       subtaskId,
       nodesCount: nodes?.length || 0,
-      edgesCount: edges?.length || 0
+      edgesCount: edges?.length || 0,
+      hasPreviewSnapshot: Boolean(previewSnapshot)
     });
     
     // Get current workspace
@@ -794,7 +797,8 @@ export const updateSubtaskCanvas = async (req, res) => {
     updatedTasks[taskIndex].subtasks[subtaskIndex].canvasData = {
       nodes: mergedNodes,
       edges: Array.isArray(edges) ? edges : (existingCanvasData.edges || []),
-      zoomLevel: zoomLevel || existingCanvasData.zoomLevel || 100
+      zoomLevel: zoomLevel || existingCanvasData.zoomLevel || 100,
+      previewSnapshot: previewSnapshot || existingCanvasData.previewSnapshot || null
     };
     updatedTasks[taskIndex].subtasks[subtaskIndex].updatedAt = new Date().toISOString();
     updatedTasks[taskIndex].updatedAt = new Date().toISOString();
