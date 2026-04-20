@@ -10,6 +10,7 @@ import {
   checkOllamaHealth,
   clearAgentCache,
 } from '../services/agentService.js';
+import { productClarificationAssistant } from '../services/productAssistantService.js';
 import {
   listConversations,
   getConversation,
@@ -316,5 +317,41 @@ export async function handleLearningStats(req, res) {
   } catch (err) {
     console.error('[AI] Learning stats error:', err);
     return res.status(500).json({ success: false, message: 'Failed to get learning stats' });
+  }
+}
+
+/**
+ * POST /api/ai/product-assistant
+ * Body: { question, context?, conversation? }
+ * Provides B2B-style structured product guidance with fallback.
+ */
+export async function handleProductAssistant(req, res) {
+  try {
+    const vendorId = req.vendorId;
+    if (!vendorId) {
+      return res.status(401).json({ success: false, message: 'Vendor ID not resolved' });
+    }
+
+    const { question, context, conversation } = req.body || {};
+    if (!question || !String(question).trim()) {
+      return res.status(400).json({ success: false, message: 'Question is required' });
+    }
+
+    const result = await productClarificationAssistant(
+      String(question).trim(),
+      context || {},
+      Array.isArray(conversation) ? conversation : []
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Product guidance generated successfully',
+      data: result,
+      usedFallback: !!result?.usedFallback,
+      warning: result?.warning || null,
+    });
+  } catch (err) {
+    console.error('[AI] Product assistant error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'AI service error' });
   }
 }

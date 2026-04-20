@@ -16,6 +16,7 @@ import {
   handleFeedback,
   handleHealthCheck,
   handleLearningStats,
+  handleProductAssistant,
 } from '../controllers/aiController.js';
 import {
   handleCreateSchedule,
@@ -46,6 +47,7 @@ router.get('/health', handleHealthCheck);
 // Chat endpoints
 router.post('/chat', ...authChain, handleChat);
 router.post('/chat/stream', ...authChain, handleChatStream);
+router.post('/product-assistant', ...authChain, handleProductAssistant);
 
 // Feedback (reinforcement learning)
 router.post('/feedback', ...authChain, handleFeedback);

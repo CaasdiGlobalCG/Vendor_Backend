@@ -47,6 +47,7 @@ import { getWorkspacePurchaseOrders, vendorApprovePurchaseOrder } from '../contr
 import { getWorkspaceSubscriptions, getSubscriptionStats, createSubscription, updateSubscription, deleteSubscription, pauseSubscription, resumeSubscription, getSubscriptionHistory, generateSubscriptionInvoice, bulkPauseSubscriptions, bulkResumeSubscriptions } from '../controllers/workspaceSubscriptionsController.js';
 import purchaseRequisitionsRouter from './purchaseRequisitionsRoutes.js';
 import procurementRequestsRouter from './procurementRequestsRoutes.js';
+import procurementQueriesRouter from './procurementQueriesRoutes.js';
 import { getRevenueForecasting, getCohortAnalysis } from '../controllers/subscriptionAnalyticsController.js';
 import { authenticateUser, requireVendor, requirePM, requireClient, checkVendorAccess } from '../../../middleware/authMiddleware.js';
 
@@ -125,6 +126,9 @@ router.use('/purchase-requisitions', purchaseRequisitionsRouter);
 
 // Mount procurement requests routes
 router.use('/procurement-requests', procurementRequestsRouter);
+
+// Mount workspace procurement query chat routes
+router.use('/procurement-queries', procurementQueriesRouter);
 
 /**
  * ========================================
