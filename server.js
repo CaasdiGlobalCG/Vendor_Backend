@@ -389,9 +389,15 @@ async function loadModules() {
     // Initialize subscription scheduler
     initializeSubscriptionScheduler();
 
-    // Initialize marketing email scheduler (daily promotions, weekly newsletter)
-    const { initializeMarketingScheduler } = await import('./modules/vendor/services/marketingScheduler.js');
-    initializeMarketingScheduler();
+    // Initialize marketing email scheduler only when explicitly enabled.
+    // This prevents unintended promotional blasts from running by default.
+    const marketingEmailsEnabled = String(process.env.ENABLE_MARKETING_EMAILS || '').toLowerCase() === 'true';
+    if (marketingEmailsEnabled) {
+      const { initializeMarketingScheduler } = await import('./modules/vendor/services/marketingScheduler.js');
+      initializeMarketingScheduler();
+    } else {
+      console.warn('⚠️ Marketing email scheduler is disabled (set ENABLE_MARKETING_EMAILS=true to enable).');
+    }
 
     // Initialize AI scheduled reports & reminders cron
     const { initializeSchedulerCron } = await import('./modules/ai/services/schedulerCron.js');

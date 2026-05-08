@@ -13,6 +13,12 @@ import { sendDailyPromotions, sendWeeklyNewsletter } from './marketingEmailServi
  * Call this once from server.js during startup.
  */
 export function initializeMarketingScheduler() {
+  const marketingEmailsEnabled = String(process.env.ENABLE_MARKETING_EMAILS || '').toLowerCase() === 'true';
+  if (!marketingEmailsEnabled) {
+    console.warn('[Marketing] Scheduler disabled (set ENABLE_MARKETING_EMAILS=true to enable).');
+    return;
+  }
+
   console.log('🔄 Initializing marketing email scheduler...');
 
   // ── Daily Promotions & Deals ──
