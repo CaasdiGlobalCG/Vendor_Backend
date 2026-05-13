@@ -553,16 +553,19 @@ router.post("/set-role", async (req, res) => {
       try {
         const clientBackendBase = process.env.CLIENT_BACKEND_URL || 'http://localhost:5004';
         const userEmail = user?.email;
+        console.log('[set-role:client] provisioning block entered. userEmail:', userEmail, 'ownerUserId:', ownerUserId, 'token present:', !!token);
         if (userEmail) {
           // Forward the user's Cognito JWT so the client backend's authenticateClient
           // middleware accepts the request. Without this, all calls return 401 and the
           // entire provisioning block is silently skipped.
           const serviceAuthHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+          if (!token) console.warn('[set-role:client] WARNING: no token available — client backend calls will likely get 401');
 
           const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, {
             params: { email: userEmail },
             headers: serviceAuthHeaders,
           });
+          console.log('[set-role:client] status response:', statusRes.status, JSON.stringify(statusRes.data).slice(0, 200));
           const exists = Boolean(statusRes?.data?.exists);
 
           // Resolve clientId — from existing record or newly created one.
@@ -576,13 +579,15 @@ router.post("/set-role", async (req, res) => {
               companyName: null,
               contactName: user?.displayName || (userEmail.split('@')[0]),
             }, { headers: serviceAuthHeaders });
+            console.log('[set-role:client] create response:', provisionRes.status, JSON.stringify(provisionRes.data).slice(0, 200));
             console.log('Provisioned client profile for', userEmail);
             resolvedClientId = provisionRes?.data?.data?.clientId || null;
+            console.log('[set-role:client] resolvedClientId from new record:', resolvedClientId);
           } else {
             console.log('[set-role] Client profile already exists for', userEmail, 'clientId:', resolvedClientId);
           }
 
-          // Always provision RBAC org owner + stamp clientOrgId (both idempotent).
+          console.log('[set-role:client] resolvedClientId final:', resolvedClientId);
           // Previously these ran only inside !exists — existing clients never got healed.
           if (resolvedClientId) {
             if (ownerUserId) {
@@ -621,7 +626,15 @@ router.post("/set-role", async (req, res) => {
           }
         }
       } catch (provisionErr) {
-        console.warn('Client provisioning skipped/failed:', provisionErr?.message);
+        // Log full details — axios errors include response.status and response.data
+        const status = provisionErr?.response?.status;
+        const body = provisionErr?.response?.data;
+        console.error('[set-role:client] PROVISIONING FAILED:', {
+          message: provisionErr?.message,
+          httpStatus: status,
+          responseBody: body,
+          stack: provisionErr?.stack?.split('\n').slice(0, 5).join('\n'),
+        });
       }
     }
 
