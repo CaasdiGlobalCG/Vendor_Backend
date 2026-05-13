@@ -554,7 +554,15 @@ router.post("/set-role", async (req, res) => {
         const clientBackendBase = process.env.CLIENT_BACKEND_URL || 'http://localhost:5004';
         const userEmail = user?.email;
         if (userEmail) {
-          const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, { params: { email: userEmail } });
+          // Forward the user's Cognito JWT so the client backend's authenticateClient
+          // middleware accepts the request. Without this, all calls return 401 and the
+          // entire provisioning block is silently skipped.
+          const serviceAuthHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
+          const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, {
+            params: { email: userEmail },
+            headers: serviceAuthHeaders,
+          });
           const exists = Boolean(statusRes?.data?.exists);
 
           // Resolve clientId — from existing record or newly created one.
@@ -567,7 +575,7 @@ router.post("/set-role", async (req, res) => {
               email: userEmail,
               companyName: null,
               contactName: user?.displayName || (userEmail.split('@')[0]),
-            });
+            }, { headers: serviceAuthHeaders });
             console.log('Provisioned client profile for', userEmail);
             resolvedClientId = provisionRes?.data?.data?.clientId || null;
           } else {
