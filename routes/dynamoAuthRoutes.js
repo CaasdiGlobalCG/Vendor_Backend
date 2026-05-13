@@ -536,8 +536,14 @@ router.post("/set-role", async (req, res) => {
         vendor = await DynamoVendor.createVendor({ email, name: user.displayName || email.split('@')[0], status: 'pending', hasFilledForm: false });
         console.log("Created vendor record for:", email);
       }
-      // Use parentOrgId as the stable RBAC org identity (generated at account creation)
-      const vendorRbacOrgId = parentOrgId || vendor.vendorId || vendor.id;
+      // Architecture:
+      // rbac_organizations.orgId  = parentOrgId  (stable UUID, PK for RBAC tables)
+      // rbac_organizations.vendorId = vendor.vendorId  (metadata column)
+      // users.vendorOrgId          = vendor.vendorId  (actual vendors table ID)
+      // vendors.parentOrgId        = parentOrgId  (stamped here so attachVendorId can
+      //                              project it without an extra users table scan)
+      const nativeVendorId = vendor.vendorId || vendor.id;
+      const vendorRbacOrgId = parentOrgId || nativeVendorId;
       // Always attempt to provision RBAC (idempotent — skips if records already exist)
       if (vendor && ownerUserId) {
         try {
@@ -547,6 +553,8 @@ router.post("/set-role", async (req, res) => {
             orgName: vendor.name || email.split('@')[0],
             userId: ownerUserId,
             email,
+            // vendorId stored as metadata — lets ops cross-reference without changing orgId
+            extraOrgFields: { vendorId: nativeVendorId },
           });
           console.log('[set-role] Provisioned RBAC org owner for vendor:', vendorRbacOrgId);
         } catch (seedErr) {
@@ -560,15 +568,25 @@ router.post("/set-role", async (req, res) => {
           console.warn('[set-role] Failed to seed roles for vendor (non-blocking):', seedErr?.message);
         }
       }
-      // Stamp vendorOrgId on the users record using parentOrgId as the stable org identity
+      // Stamp parentOrgId onto the vendors record so attachVendorId can read it
+      // as a single projected field — avoids an extra users table scan per request.
+      if (vendor && parentOrgId) {
+        try {
+          await DynamoVendor.updateVendor(nativeVendorId, { parentOrgId });
+          console.log('[set-role] Stamped parentOrgId on vendor record:', nativeVendorId);
+        } catch (patchErr) {
+          console.warn('[set-role] Failed to stamp parentOrgId on vendor record (non-blocking):', patchErr?.message);
+        }
+      }
+      // Stamp users.vendorOrgId = actual vendors table vendorId (NOT parentOrgId)
       if (vendor) {
         try {
           const usersRec = await DynamoUser.getUserByEmail(String(user.email || '').trim().toLowerCase());
           if (usersRec) {
             await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
-              vendorOrgId: vendorRbacOrgId,
+              vendorOrgId: nativeVendorId,
             });
-            console.log('[set-role] Stamped vendorOrgId:', vendorRbacOrgId);
+            console.log('[set-role] Stamped vendorOrgId:', nativeVendorId);
           }
         } catch (patchErr) {
           console.warn('[set-role] Failed to stamp vendorOrgId on users record (non-blocking):', patchErr?.message);
@@ -608,18 +626,10 @@ router.post("/set-role", async (req, res) => {
             }
           }
 
-          // 2. Stamp clientOrgId on the users record
-          try {
-            const usersRec = await DynamoUser.getUserByEmail(clientEmail);
-            if (usersRec) {
-              await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
-                clientOrgId: parentOrgId,
-              });
-              console.log('[set-role] Stamped clientOrgId:', parentOrgId, 'on users record');
-            }
-          } catch (patchErr) {
-            console.warn('[set-role] Failed to stamp clientOrgId (non-blocking):', patchErr?.message);
-          }
+          // 2. users.clientOrgId is intentionally NOT stamped here with parentOrgId.
+          //    It will be set to the actual clients.clientId once the client backend
+          //    responds (see the .then() handler below). parentOrgId remains as the
+          //    RBAC orgId; clientOrgId carries the cross-service client table ID.
         } else {
           console.warn('[set-role:client] parentOrgId unavailable — RBAC provisioning skipped');
         }
@@ -636,8 +646,9 @@ router.post("/set-role", async (req, res) => {
               headers: serviceAuthHeaders,
             })
             .then(async (statusRes) => {
+              let resolvedClientId = statusRes?.data?.clientId || null;
               if (!statusRes?.data?.exists) {
-                await axios.post(
+                const createRes = await axios.post(
                   `${clientBackendBase}/client-api/clients`,
                   {
                     email: user?.email,
@@ -646,7 +657,22 @@ router.post("/set-role", async (req, res) => {
                   },
                   { headers: serviceAuthHeaders },
                 );
-                console.log('[set-role] Client profile created in client backend for', user?.email);
+                resolvedClientId = createRes?.data?.data?.clientId || resolvedClientId;
+                console.log('[set-role] Client profile created in client backend for', user?.email, 'clientId:', resolvedClientId);
+              }
+              // Stamp users.clientOrgId = actual clients.clientId from client backend
+              if (resolvedClientId) {
+                try {
+                  const usersRec = await DynamoUser.getUserByEmail(String(user?.email || '').trim().toLowerCase());
+                  if (usersRec) {
+                    await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
+                      clientOrgId: resolvedClientId,
+                    });
+                    console.log('[set-role] Stamped clientOrgId:', resolvedClientId, 'on users record');
+                  }
+                } catch (stampErr) {
+                  console.warn('[set-role:client] Failed to stamp clientOrgId (non-blocking):', stampErr?.message);
+                }
               }
             })
             .catch((e) => {

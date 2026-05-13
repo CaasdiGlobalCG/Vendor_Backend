@@ -61,11 +61,12 @@ export async function attachVendorId(req, res, next) {
       const hintResult = await docClient.send(new GetCommand({
         TableName: VENDORS_TABLE,
         Key: { vendorId: hintVendorId },
-        ProjectionExpression: 'vendorId, email',
+        ProjectionExpression: 'vendorId, email, parentOrgId',
       }));
 
       if (hintResult.Item?.email === email) {
         req.vendorId = hintVendorId;
+        req.parentOrgId = hintResult.Item?.parentOrgId || null;
         return next();
       }
       // Hint didn't match — fall through to full EmailIndex lookup
@@ -82,13 +83,17 @@ export async function attachVendorId(req, res, next) {
       IndexName: 'EmailIndex',
       KeyConditionExpression: 'email = :email',
       ExpressionAttributeValues: { ':email': email },
-      ProjectionExpression: 'vendorId',
+      ProjectionExpression: 'vendorId, parentOrgId',
       Limit: 1,
     }));
 
     const vendor = result.Items?.[0];
     if (vendor?.vendorId) {
       req.vendorId = vendor.vendorId;
+      // parentOrgId is the RBAC orgId (rbac_organizations PK / rbac_members orgId).
+      // Stamped onto the vendors record by set-role so we can read it here in one
+      // cheap projected field — no extra users table scan needed.
+      req.parentOrgId = vendor.parentOrgId || null;
       return next();
     }
 
@@ -113,6 +118,8 @@ export async function attachVendorId(req, res, next) {
 
       if (activeMembership?.orgId) {
         req.vendorId = activeMembership.orgId;
+        // For team members, orgId in rbac_members IS already the parentOrgId
+        req.parentOrgId = activeMembership.orgId;
         req.isTeamMember = true;
         console.log(`[attachVendorId] Resolved team member ${email} → orgId ${activeMembership.orgId}`);
       }

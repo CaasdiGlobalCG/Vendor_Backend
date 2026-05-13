@@ -111,10 +111,12 @@ export async function seedRolesForOrg(orgId, orgType) {
  * @param {string} params.email        - Owner's email
  * @returns {Promise<void>}
  */
-export async function provisionOrgOwner({ orgId, orgType, orgName, userId, email }) {
+export async function provisionOrgOwner({ orgId, orgType, orgName, userId, email, extraOrgFields = {} }) {
   const now = new Date().toISOString();
 
   // 1. Create rbac_organizations record
+  // extraOrgFields can carry metadata like parentOrgId, vendorId, clientId
+  // without affecting the orgId primary key used for membership lookups.
   try {
     await docClient.send(new PutCommand({
       TableName: TABLES.ORGANIZATIONS,
@@ -128,6 +130,7 @@ export async function provisionOrgOwner({ orgId, orgType, orgName, userId, email
         currentSeatCount: 1,
         createdAt: now,
         updatedAt: now,
+        ...extraOrgFields,
       },
       ConditionExpression: 'attribute_not_exists(orgId)',
     }));

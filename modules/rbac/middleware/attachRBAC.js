@@ -27,6 +27,13 @@ import { normalizeScopeAccess } from '../utils/scopeAccess.utils.js';
  * @returns {{ orgId: string, orgType: string } | null}
  */
 function resolveOrg(req) {
+  // parentOrgId is the stable RBAC org identity (rbac_organizations PK, rbac_members orgId).
+  // attachVendorId sets req.parentOrgId by projecting it from the vendors table.
+  // req.vendorId / req.clientId are preserved for other middleware that needs the native IDs.
+  if (req.parentOrgId) {
+    const orgType = req.clientId ? 'client' : 'vendor';
+    return { orgId: req.parentOrgId, orgType };
+  }
   if (req.vendorId) return { orgId: req.vendorId, orgType: 'vendor' };
   if (req.clientId) return { orgId: req.clientId, orgType: 'client' };
   return null;
