@@ -556,6 +556,12 @@ router.post("/set-role", async (req, res) => {
         if (userEmail) {
           const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, { params: { email: userEmail } });
           const exists = Boolean(statusRes?.data?.exists);
+
+          // Resolve clientId — from existing record or newly created one.
+          // provisionOrgOwner + clientOrgId stamp must run for BOTH new and existing
+          // clients (idempotent), mirroring the vendor block behaviour.
+          let resolvedClientId = statusRes?.data?.clientId || null;
+
           if (!exists) {
             const provisionRes = await axios.post(`${clientBackendBase}/client-api/clients`, {
               email: userEmail,
@@ -563,40 +569,46 @@ router.post("/set-role", async (req, res) => {
               contactName: user?.displayName || (userEmail.split('@')[0]),
             });
             console.log('Provisioned client profile for', userEmail);
-            // Provision full RBAC records: org + default roles + owner member record
-            const newClientId = provisionRes?.data?.data?.clientId;
-            if (newClientId) {
-              if (ownerUserId) {
-                try {
-                  await provisionOrgOwner({
-                    orgId: newClientId,
-                    orgType: 'client',
-                    orgName: user?.displayName || userEmail.split('@')[0],
-                    userId: ownerUserId,
-                    email: userEmail,
-                  });
-                  console.log('[set-role] Provisioned RBAC org owner for client:', newClientId);
-                } catch (seedErr) {
-                  console.warn('[set-role] Failed to provision RBAC for client (non-blocking):', seedErr?.message);
-                }
-              } else {
-                try {
-                  await seedRolesForOrg(newClientId, 'client');
-                } catch (seedErr) {
-                  console.warn('[set-role] Failed to seed roles for client (non-blocking):', seedErr?.message);
-                }
-              }
-              // Stamp clientOrgId on the users record
+            resolvedClientId = provisionRes?.data?.data?.clientId || null;
+          } else {
+            console.log('[set-role] Client profile already exists for', userEmail, 'clientId:', resolvedClientId);
+          }
+
+          // Always provision RBAC org owner + stamp clientOrgId (both idempotent).
+          // Previously these ran only inside !exists — existing clients never got healed.
+          if (resolvedClientId) {
+            if (ownerUserId) {
               try {
-                const usersRec = await DynamoUser.getUserByEmail(String(userEmail).trim().toLowerCase());
-                if (usersRec) {
-                  await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
-                    clientOrgId: newClientId,
-                  });
-                }
-              } catch (patchErr) {
-                console.warn('[set-role] Failed to stamp clientOrgId on users record (non-blocking):', patchErr?.message);
+                await provisionOrgOwner({
+                  orgId: resolvedClientId,
+                  orgType: 'client',
+                  orgName: user?.displayName || userEmail.split('@')[0],
+                  userId: ownerUserId,
+                  email: userEmail,
+                });
+                console.log('[set-role] Provisioned RBAC org owner for client:', resolvedClientId);
+              } catch (seedErr) {
+                console.warn('[set-role] Failed to provision RBAC for client (non-blocking):', seedErr?.message);
               }
+            } else {
+              // Fallback: seed roles if no userId (e.g. Google path without cognitoId)
+              try {
+                await seedRolesForOrg(resolvedClientId, 'client');
+              } catch (seedErr) {
+                console.warn('[set-role] Failed to seed roles for client (non-blocking):', seedErr?.message);
+              }
+            }
+            // Stamp clientOrgId on the users record
+            try {
+              const usersRec = await DynamoUser.getUserByEmail(String(userEmail).trim().toLowerCase());
+              if (usersRec) {
+                await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
+                  clientOrgId: resolvedClientId,
+                });
+                console.log('[set-role] Stamped clientOrgId on users record:', resolvedClientId);
+              }
+            } catch (patchErr) {
+              console.warn('[set-role] Failed to stamp clientOrgId on users record (non-blocking):', patchErr?.message);
             }
           }
         }
