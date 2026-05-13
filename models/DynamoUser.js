@@ -28,6 +28,9 @@ export const createUser = async (userData) => {
     passkeyRegisteredAt: passkeyRegisteredAt || null,
     createdAt: now,
     updatedAt: now,
+    // Stable org identity — generated once at account creation, used as RBAC orgId
+    // for both vendor and client paths. Callers can override via extraFields.
+    parentOrgId: uuidv4(),
     ...extraFields,
   };
   await dynamoDB.put({ TableName: USERS_TABLE, Item: item }).promise();

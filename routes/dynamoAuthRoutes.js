@@ -18,6 +18,7 @@ import jwkToPem from "jwk-to-pem"; // Convert JWK to PEM for verification
 import axios from "axios"; // For fetching JWKS
 import { CognitoIdentityProviderClient, AdminCreateUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { seedRolesForOrg, provisionOrgOwner } from '../modules/rbac/scripts/seedDefaults.js';
+import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -488,6 +489,31 @@ router.post("/set-role", async (req, res) => {
       }
     }
 
+    // ── Resolve parentOrgId ───────────────────────────────────────────────────
+    // parentOrgId is the stable org identity generated when the users record is
+    // first created (DynamoUser.createUser). It is used as the RBAC orgId for
+    // both vendor and client provisioning, eliminating any cross-service HTTP
+    // dependency from this critical path.
+    let parentOrgId = null;
+    {
+      const resolveEmail = String(user.email || '').trim().toLowerCase();
+      try {
+        const freshRec = await DynamoUser.getUserByEmail(resolveEmail);
+        parentOrgId = freshRec?.parentOrgId || null;
+        if (!parentOrgId) {
+          // Back-fill: account was created before parentOrgId was introduced
+          parentOrgId = uuidv4();
+          const recId = freshRec?.userId || freshRec?.id;
+          if (recId) await DynamoUser.updateUser(recId, { parentOrgId });
+          console.log('[set-role] Back-filled parentOrgId:', parentOrgId, 'for', resolveEmail);
+        } else {
+          console.log('[set-role] Resolved parentOrgId:', parentOrgId, 'for', resolveEmail);
+        }
+      } catch (e) {
+        console.warn('[set-role] parentOrgId resolution failed (provisioning may be partial):', e?.message);
+      }
+    }
+
     // Decide next route and ensure vendor presence if needed.
     // Team members share the org's vendorId/clientId — do NOT create
     // a separate vendor/client record for them.
@@ -510,36 +536,39 @@ router.post("/set-role", async (req, res) => {
         vendor = await DynamoVendor.createVendor({ email, name: user.displayName || email.split('@')[0], status: 'pending', hasFilledForm: false });
         console.log("Created vendor record for:", email);
       }
+      // Use parentOrgId as the stable RBAC org identity (generated at account creation)
+      const vendorRbacOrgId = parentOrgId || vendor.vendorId || vendor.id;
       // Always attempt to provision RBAC (idempotent — skips if records already exist)
       if (vendor && ownerUserId) {
         try {
           await provisionOrgOwner({
-            orgId: vendor.vendorId || vendor.id,
+            orgId: vendorRbacOrgId,
             orgType: 'vendor',
             orgName: vendor.name || email.split('@')[0],
             userId: ownerUserId,
             email,
           });
-          console.log('[set-role] Provisioned RBAC org owner for vendor:', vendor.vendorId || vendor.id);
+          console.log('[set-role] Provisioned RBAC org owner for vendor:', vendorRbacOrgId);
         } catch (seedErr) {
           console.warn('[set-role] Failed to provision RBAC for vendor (non-blocking):', seedErr?.message);
         }
       } else if (vendor) {
         // Fallback: at least seed roles if no userId (e.g. Google path without cognitoId)
         try {
-          await seedRolesForOrg(vendor.vendorId || vendor.id, 'vendor');
+          await seedRolesForOrg(vendorRbacOrgId, 'vendor');
         } catch (seedErr) {
           console.warn('[set-role] Failed to seed roles for vendor (non-blocking):', seedErr?.message);
         }
       }
-      // Stamp vendorOrgId on the users record so it matches the owner example shape
-      if (vendor && ownerUserId) {
+      // Stamp vendorOrgId on the users record using parentOrgId as the stable org identity
+      if (vendor) {
         try {
           const usersRec = await DynamoUser.getUserByEmail(String(user.email || '').trim().toLowerCase());
           if (usersRec) {
             await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
-              vendorOrgId: vendor.vendorId || vendor.id,
+              vendorOrgId: vendorRbacOrgId,
             });
+            console.log('[set-role] Stamped vendorOrgId:', vendorRbacOrgId);
           }
         } catch (patchErr) {
           console.warn('[set-role] Failed to stamp vendorOrgId on users record (non-blocking):', patchErr?.message);
@@ -548,93 +577,84 @@ router.post("/set-role", async (req, res) => {
       nextRoute = "/Form1";
     }
 
-    // If role is client, ensure client profile exists via client-backend (idempotent)
+    // ── Client role provisioning ──────────────────────────────────────────────
+    // RBAC setup uses parentOrgId directly — no cross-service HTTP dependency.
+    // Client backend profile creation is best-effort and non-blocking.
     if (role === 'client') {
       try {
-        const clientBackendBase = process.env.CLIENT_BACKEND_URL || 'http://localhost:5004';
-        const userEmail = user?.email;
-        console.log('[set-role:client] provisioning block entered. userEmail:', userEmail, 'ownerUserId:', ownerUserId, 'token present:', !!token);
-        if (userEmail) {
-          // Forward the user's Cognito JWT so the client backend's authenticateClient
-          // middleware accepts the request. Without this, all calls return 401 and the
-          // entire provisioning block is silently skipped.
-          const serviceAuthHeaders = token ? { Authorization: `Bearer ${token}` } : {};
-          if (!token) console.warn('[set-role:client] WARNING: no token available — client backend calls will likely get 401');
+        const clientEmail = String(user.email || '').trim().toLowerCase();
+        console.log('[set-role:client] parentOrgId:', parentOrgId, 'ownerUserId:', ownerUserId);
 
-          const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, {
-            params: { email: userEmail },
-            headers: serviceAuthHeaders,
-          });
-          console.log('[set-role:client] status response:', statusRes.status, JSON.stringify(statusRes.data).slice(0, 200));
-          const exists = Boolean(statusRes?.data?.exists);
-
-          // Resolve clientId — from existing record or newly created one.
-          // provisionOrgOwner + clientOrgId stamp must run for BOTH new and existing
-          // clients (idempotent), mirroring the vendor block behaviour.
-          let resolvedClientId = statusRes?.data?.clientId || null;
-
-          if (!exists) {
-            const provisionRes = await axios.post(`${clientBackendBase}/client-api/clients`, {
-              email: userEmail,
-              companyName: null,
-              contactName: user?.displayName || (userEmail.split('@')[0]),
-            }, { headers: serviceAuthHeaders });
-            console.log('[set-role:client] create response:', provisionRes.status, JSON.stringify(provisionRes.data).slice(0, 200));
-            console.log('Provisioned client profile for', userEmail);
-            resolvedClientId = provisionRes?.data?.data?.clientId || null;
-            console.log('[set-role:client] resolvedClientId from new record:', resolvedClientId);
-          } else {
-            console.log('[set-role] Client profile already exists for', userEmail, 'clientId:', resolvedClientId);
-          }
-
-          console.log('[set-role:client] resolvedClientId final:', resolvedClientId);
-          // Previously these ran only inside !exists — existing clients never got healed.
-          if (resolvedClientId) {
-            if (ownerUserId) {
-              try {
-                await provisionOrgOwner({
-                  orgId: resolvedClientId,
-                  orgType: 'client',
-                  orgName: user?.displayName || userEmail.split('@')[0],
-                  userId: ownerUserId,
-                  email: userEmail,
-                });
-                console.log('[set-role] Provisioned RBAC org owner for client:', resolvedClientId);
-              } catch (seedErr) {
-                console.warn('[set-role] Failed to provision RBAC for client (non-blocking):', seedErr?.message);
-              }
-            } else {
-              // Fallback: seed roles if no userId (e.g. Google path without cognitoId)
-              try {
-                await seedRolesForOrg(resolvedClientId, 'client');
-              } catch (seedErr) {
-                console.warn('[set-role] Failed to seed roles for client (non-blocking):', seedErr?.message);
-              }
-            }
-            // Stamp clientOrgId on the users record
+        if (parentOrgId) {
+          // 1. Provision RBAC org owner using the stable parentOrgId
+          if (ownerUserId) {
             try {
-              const usersRec = await DynamoUser.getUserByEmail(String(userEmail).trim().toLowerCase());
-              if (usersRec) {
-                await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
-                  clientOrgId: resolvedClientId,
-                });
-                console.log('[set-role] Stamped clientOrgId on users record:', resolvedClientId);
-              }
-            } catch (patchErr) {
-              console.warn('[set-role] Failed to stamp clientOrgId on users record (non-blocking):', patchErr?.message);
+              await provisionOrgOwner({
+                orgId: parentOrgId,
+                orgType: 'client',
+                orgName: user?.displayName || clientEmail.split('@')[0],
+                userId: ownerUserId,
+                email: clientEmail,
+              });
+              console.log('[set-role] Provisioned RBAC org owner for client:', parentOrgId);
+            } catch (seedErr) {
+              console.warn('[set-role] Failed to provision RBAC for client (non-blocking):', seedErr?.message);
+            }
+          } else {
+            try {
+              await seedRolesForOrg(parentOrgId, 'client');
+            } catch (seedErr) {
+              console.warn('[set-role] Failed to seed roles for client (non-blocking):', seedErr?.message);
             }
           }
+
+          // 2. Stamp clientOrgId on the users record
+          try {
+            const usersRec = await DynamoUser.getUserByEmail(clientEmail);
+            if (usersRec) {
+              await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
+                clientOrgId: parentOrgId,
+              });
+              console.log('[set-role] Stamped clientOrgId:', parentOrgId, 'on users record');
+            }
+          } catch (patchErr) {
+            console.warn('[set-role] Failed to stamp clientOrgId (non-blocking):', patchErr?.message);
+          }
+        } else {
+          console.warn('[set-role:client] parentOrgId unavailable — RBAC provisioning skipped');
+        }
+
+        // 3. Best-effort: sync client profile in client backend (non-blocking).
+        //    Stores client-specific data (companyName, onboarding status, etc.).
+        //    Does NOT block role selection — any failure is logged and ignored.
+        const clientBackendBase = process.env.CLIENT_BACKEND_URL || 'http://localhost:5004';
+        if (token) {
+          const serviceAuthHeaders = { Authorization: `Bearer ${token}` };
+          axios
+            .get(`${clientBackendBase}/client-api/clients/status`, {
+              params: { email: user?.email },
+              headers: serviceAuthHeaders,
+            })
+            .then(async (statusRes) => {
+              if (!statusRes?.data?.exists) {
+                await axios.post(
+                  `${clientBackendBase}/client-api/clients`,
+                  {
+                    email: user?.email,
+                    companyName: null,
+                    contactName: user?.displayName || String(user?.email || '').split('@')[0],
+                  },
+                  { headers: serviceAuthHeaders },
+                );
+                console.log('[set-role] Client profile created in client backend for', user?.email);
+              }
+            })
+            .catch((e) => {
+              console.warn('[set-role:client] Client backend profile sync (non-blocking) failed:', e?.response?.status, e?.message);
+            });
         }
       } catch (provisionErr) {
-        // Log full details — axios errors include response.status and response.data
-        const status = provisionErr?.response?.status;
-        const body = provisionErr?.response?.data;
-        console.error('[set-role:client] PROVISIONING FAILED:', {
-          message: provisionErr?.message,
-          httpStatus: status,
-          responseBody: body,
-          stack: provisionErr?.stack?.split('\n').slice(0, 5).join('\n'),
-        });
+        console.error('[set-role:client] PROVISIONING FAILED:', provisionErr?.message, provisionErr?.stack?.split('\n').slice(0, 3).join('\n'));
       }
     }
 
