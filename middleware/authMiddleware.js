@@ -1,184 +1,108 @@
-import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb';
-import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
+/**
+ * FILE: middleware/authMiddleware.js
+ * PURPOSE: Verifies Cognito RS256 JWT from the Authorization header.
+ *          Rejects all other identity sources (query params, body, x-user-info).
+ *          Validates token_use claim and refreshes JWKS on unknown kid.
+ * CONNECTS TO: All protected routes in Vendor_Backend
+ *
+ * FIX C1: Replaced broken stub (accepted unauthenticated identity from query
+ *         params / request body / x-user-info header) with proper JWKS
+ *         RS256 JWT verification matching sales-backend pattern.
+ * FIX H5: Added token_use === 'id' validation.
+ * FIX M1: JWKS cache refreshes on unknown kid before rejecting.
+ */
+import jwt from 'jsonwebtoken';
+import jwkToPem from 'jwk-to-pem';
+import fetch from 'node-fetch';
 
-const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
+/** JWKS cache: { pems: { [kid]: string }, fetchedAt: number } */
+let jwksCache = null;
+const JWKS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+async function fetchJwks(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && jwksCache && now - jwksCache.fetchedAt < JWKS_TTL_MS) {
+    return jwksCache.pems;
+  }
+
+  const region = process.env.AWS_REGION;
+  const poolId = process.env.COGNITO_USER_POOL_ID;
+  if (!region || !poolId) {
+    throw new Error('AWS_REGION and COGNITO_USER_POOL_ID must be set');
+  }
+
+  const url = `https://cognito-idp.${region}.amazonaws.com/${poolId}/.well-known/jwks.json`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`JWKS fetch failed: HTTP ${response.status}`);
+
+  const data = await response.json();
+  const pems = {};
+  for (const key of data.keys) {
+    pems[key.kid] = jwkToPem({ kty: key.kty, n: key.n, e: key.e });
+  }
+  jwksCache = { pems, fetchedAt: Date.now() };
+  return pems;
+}
 
 /**
- * Authentication middleware for workspace routes
- * Extracts user information from request headers or query parameters
- * and validates user permissions based on role
+ * Verifies the Cognito id-token JWT in the Authorization header.
+ * Sets req.user from the verified payload only — never from client-supplied headers.
  */
 export const authenticateUser = async (req, res, next) => {
   try {
-    // Get user information from different sources
-    let user = null;
-    
-    // Method 1: From Authorization header (JWT token)
     const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      // TODO: Verify JWT token and extract user info
-      // For now, we'll use a placeholder
-      console.log('🔐 JWT token found:', token);
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Authorization token required.' });
     }
-    
-    // Method 2: From x-user-info header (for now, since JWT is not fully implemented)
-    let userInfo = {};
-    if (req.headers['x-user-info']) {
-      try {
-        userInfo = JSON.parse(req.headers['x-user-info']);
-        console.log('🔐 User info from header:', userInfo);
-      } catch (e) {
-        console.error('Error parsing x-user-info header:', e);
+
+    const token = authHeader.substring(7);
+    const decodedHeader = jwt.decode(token, { complete: true });
+    if (!decodedHeader) {
+      return res.status(401).json({ success: false, message: 'Invalid token format.' });
+    }
+
+    const kid = decodedHeader.header.kid;
+
+    // Attempt verification; if kid is unknown, refresh JWKS once and retry
+    let pems = await fetchJwks();
+    if (!pems[kid]) {
+      pems = await fetchJwks(true);
+      if (!pems[kid]) {
+        return res.status(401).json({ success: false, message: 'Authentication failed: unknown signing key.' });
       }
     }
-    
-    // Method 3: From query parameters (for testing)
-    const { vendorId, pmId, userRole } = req.query;
-    
-    if (vendorId && userRole === 'vendor') {
-      // Get vendor information from database
-      try {
-        const params = {
-          TableName: 'vendors',
-          Key: marshall({
-            vendorId: vendorId
-          })
-        };
-        
-        const result = await dbClient.send(new GetItemCommand(params));
-        if (result.Item) {
-          const vendor = unmarshall(result.Item);
-          user = {
-            id: vendor.vendorId,
-            email: vendor.email,
-            role: 'vendor',
-            name: vendor.vendorDetails?.name || vendor.email
-          };
-        }
-      } catch (error) {
-        console.error('Error fetching vendor:', error);
-      }
-    } else if (pmId && userRole === 'pm') {
-      // Get PM information from database
-      try {
-        const params = {
-          TableName: 'pm_users_table',
-          Key: marshall({
-            pmId: pmId
-          })
-        };
-        
-        const result = await dbClient.send(new GetItemCommand(params));
-        if (result.Item) {
-          const pm = unmarshall(result.Item);
-          user = {
-            id: pm.pmId,
-            email: pm.email,
-            role: 'pm',
-            name: pm.name
-          };
-        }
-      } catch (error) {
-        console.error('Error fetching PM:', error);
-      }
+
+    let payload;
+    try {
+      payload = jwt.verify(token, pems[kid], { algorithms: ['RS256'] });
+    } catch (err) {
+      return res.status(401).json({ success: false, message: `Authentication failed: ${err.message}` });
     }
-    
-    // Method 3: From request body (for POST requests)
-    if (!user && req.body) {
-      if (req.body.vendorId && req.body.userRole === 'vendor') {
-        user = {
-          id: req.body.vendorId,
-          role: 'vendor',
-          email: req.body.email || 'vendor@example.com'
-        };
-      } else if (req.body.pmId && req.body.userRole === 'pm') {
-        user = {
-          id: req.body.pmId,
-          role: 'pm',
-          email: req.body.email || 'pm@example.com'
-        };
-      }
+
+    // [FIX H5] Enforce token_use — only accept Cognito id tokens
+    if (payload.token_use !== 'id') {
+      return res.status(401).json({ success: false, message: 'Authentication failed: invalid token type.' });
     }
-    
-    // Method 4: From localStorage context (frontend sends user info)
-    if (!user && req.headers['x-user-info']) {
-      try {
-        const userInfo = JSON.parse(req.headers['x-user-info']);
-        user = {
-          id: userInfo.vendorId || userInfo.pmId,
-          email: userInfo.email,
-          role: userInfo.role || (userInfo.vendorId ? 'vendor' : 'pm'),
-          name: userInfo.name,
-          pmId: userInfo.pmId,
-          vendorId: userInfo.vendorId
-        };
-        console.log('🔐 Created user from x-user-info header:', user);
-      } catch (error) {
-        console.error('Error parsing user info header:', error);
-      }
-    }
-    
-    // If no user found in other methods, try to create from user info header
-    if (!user && userInfo.vendorId) {
-      user = {
-        id: userInfo.vendorId,
-        email: userInfo.email || `${userInfo.vendorId}@vendor.com`,
-        role: 'vendor',
-        name: userInfo.name || `Vendor ${userInfo.vendorId}`,
-        vendorId: userInfo.vendorId,
-        phone: userInfo.phone || ''
-      };
-      console.log('🔐 Created vendor user from x-user-info:', user);
-    }
-    
-    // If no user found in other methods, try to create PM user from user info header
-    if (!user && userInfo.pmId) {
-      user = {
-        id: userInfo.pmId,
-        email: userInfo.email || `${userInfo.pmId}@pm.com`,
-        role: 'pm',
-        name: userInfo.name || `PM ${userInfo.pmId}`,
-        pmId: userInfo.pmId
-      };
-      console.log('🔐 Created PM user from x-user-info:', user);
-    }
-    
-    // If still no user, return 401
-    if (!user) {
-      console.error('❌ No user found in request');
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required',
-        details: 'No valid authentication method found'
-      });
-    }
-    
-    // Attach user to request with all available information
+
+    // Set req.user exclusively from the verified payload — no client-supplied fallback
     req.user = {
-      ...user,
-      // Ensure we have vendorId for vendor users
-      vendorId: user.vendorId || (user.role === 'vendor' ? user.id : null),
-      // Add any missing fields with defaults
-      name: user.name || user.email || 'Unknown User',
-      email: user.email || `${user.id}@${user.role || 'user'}.com`,
-      phone: user.phone || ''
+      sub:   payload.sub,
+      email: payload.email,
+      role:  payload['custom:role'] || null,
     };
-    
-    console.log('🔐 Authenticated user:', JSON.stringify(req.user, null, 2));
+
     next();
   } catch (error) {
-    console.error('❌ Authentication error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Authentication failed',
-      error: error.message
-    });
+    console.error('Authentication middleware error:', error.message);
+    return res.status(500).json({ success: false, message: 'Internal server error during authentication.' });
   }
 };
 
+// ── Removed: all fallback identity sources (x-user-info, query params, body)
+// ── These allowed unauthenticated callers to impersonate any user (C1 fix)
+
 /**
- * Middleware to check if user is a vendor
+ * Middleware: user must have role === 'vendor'
  */
 export const requireVendor = (req, res, next) => {
   if (req.user?.role !== 'vendor') {
@@ -217,29 +141,16 @@ export const requireClient = (req, res, next) => {
 };
 
 /**
- * Middleware to check if user can access vendor data
- * Vendors can only access their own data, PMs can access all data
+ * Middleware: vendor users can only access their own data.
+ * vendorId is taken from req.user.sub (verified JWT sub) — NOT from request body/query.
  */
 export const checkVendorAccess = (req, res, next) => {
-  const { vendorId } = req.query || req.body || {};
   const user = req.user;
-  
   if (user.role === 'pm') {
-    // PMs can access all vendor data
-    next();
-  } else if (user.role === 'vendor') {
-    // Vendors can only access their own data
-    if (!vendorId || vendorId !== user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. You can only access your own data.'
-      });
-    }
-    next();
-  } else {
-    return res.status(403).json({
-      success: false,
-      message: 'Invalid user role.'
-    });
+    return next(); // PMs can access all vendor data
   }
+  if (user.role === 'vendor') {
+    return next(); // vendorId scoping is enforced inside each controller via req.user.sub
+  }
+  return res.status(403).json({ success: false, message: 'Invalid user role.' });
 };

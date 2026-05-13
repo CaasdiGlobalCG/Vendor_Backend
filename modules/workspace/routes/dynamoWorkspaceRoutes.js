@@ -11,9 +11,14 @@ import { requirePermission } from '../../rbac/middleware/requirePermission.js';
 
 const router = express.Router();
 
-router.use(authenticateCognitoJwt);
-router.use(attachVendorId);
-router.use(attachRBAC);
+// Scope auth + RBAC only to workspace-related paths.
+// This router is mounted at /api so a bare router.use() bleeds into all
+// /api/* routes (including /api/vendor/*). Scoping prevents that.
+const authChain = [authenticateCognitoJwt, attachVendorId, attachRBAC];
+router.use('/workspaces', ...authChain);     // /api/workspaces/*
+router.use('/workspace-access', ...authChain); // /api/workspace-access/*
+router.use('/workspace', ...authChain);      // /api/workspace/*
+router.use('/cas-member', ...authChain);     // /api/cas-member/*
 
 // Create a new workspace
 router.post('/workspaces', requirePermission('workspace', 'create'), dynamoWorkspaceController.createWorkspace);

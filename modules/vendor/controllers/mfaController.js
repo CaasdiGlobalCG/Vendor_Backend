@@ -385,14 +385,18 @@ export const disableTOTP = async (req, res) => {
  */
 export const getMFAStatus = async (req, res) => {
   try {
-    const userEmail = req.auth?.email;
+    const rawEmail = req.auth?.email;
 
-    if (!userEmail) {
+    if (!rawEmail) {
       return res.status(401).json({
         success: false,
         message: 'Email not found in authentication context'
       });
     }
+
+    // Normalise to lowercase: Cognito JWTs preserve the registration case but
+    // vendor records are always stored lowercase (set-role normalises on create).
+    const userEmail = String(rawEmail).trim().toLowerCase();
 
     // Get vendor data
     const vendor = await getVendorByEmail(userEmail);

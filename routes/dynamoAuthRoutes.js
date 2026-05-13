@@ -17,7 +17,7 @@ import jwt from "jsonwebtoken"; // Add jsonwebtoken for token validation
 import jwkToPem from "jwk-to-pem"; // Convert JWK to PEM for verification
 import axios from "axios"; // For fetching JWKS
 import { CognitoIdentityProviderClient, AdminCreateUserCommand } from "@aws-sdk/client-cognito-identity-provider";
-import { seedRolesForOrg } from '../modules/rbac/scripts/seedDefaults.js';
+import { seedRolesForOrg, provisionOrgOwner } from '../modules/rbac/scripts/seedDefaults.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -388,8 +388,9 @@ router.post("/set-role", async (req, res) => {
     if (!role || !["vendor", "client"].includes(role)) {
       return res.status(400).json({ error: "Invalid role. Must be 'vendor' or 'client'." });
     }
-    let user;
-
+    let user;    // ownerUserId = Cognito sub (JWT path) or Google user's cognitoId.
+    // Used to create the rbac_members owner record after org creation.
+    let ownerUserId = null;
     // Handle Google authentication (Passport.js session)
     if (req.user) {
       console.log("Attempting to update role for user ID:", req.user._id);
@@ -397,6 +398,8 @@ router.post("/set-role", async (req, res) => {
         user = await DynamoGoogleUser.getGoogleUserByEmail(req.user.email);
         if (user) {
           console.log("Found user in DynamoDB Google users:", user.email);
+          // Capture Cognito sub if the Google user record has one
+          ownerUserId = user.cognitoId || user.userId || null;
         }
       }
       if (!user) {
@@ -423,6 +426,7 @@ router.post("/set-role", async (req, res) => {
       });
 
       const userId = decoded.sub;
+      ownerUserId = userId; // capture for RBAC provisioning after auth block
       const email = decoded.email;
       console.log("Attempting to update role for Cognito user ID:", userId);
       // Prefer users by email
@@ -448,27 +452,37 @@ router.post("/set-role", async (req, res) => {
     try {
       const now = new Date().toISOString();
       const normalizedEmail = String(user.email || '').trim().toLowerCase();
+      console.log('[set-role] Updating users table for:', normalizedEmail, 'role:', role);
       const existingUser = await DynamoUser.getUserByEmail(normalizedEmail);
+      console.log('[set-role] Existing users record:', existingUser ? `id=${existingUser.userId || existingUser.id} roleSelected=${existingUser.roleSelected}` : 'NOT FOUND');
       if (existingUser) {
-        await DynamoUser.updateUser(existingUser.userId || existingUser.id, {
+        const updated = await DynamoUser.updateUser(existingUser.userId || existingUser.id, {
           lastSelectedRole: role,
           lastSelectedRoleUpdatedAt: now,
-          roleSelected: true
+          roleSelected: true,
+          isOrgOwner: true,
+          accountType: 'owner',
         });
+        console.log('[set-role] Updated users record:', updated ? `roleSelected=${updated.roleSelected} lastSelectedRole=${updated.lastSelectedRole}` : 'update returned null');
       } else {
-        await DynamoUser.createUser({
+        const created = await DynamoUser.createUser({
           email: normalizedEmail,
           displayName: user.displayName,
           lastSelectedRole: role,
           lastSelectedRoleUpdatedAt: now,
           status: 'pending',
           hasFilledForm: false,
-          roleSelected: true
+          roleSelected: true,
+          isOrgOwner: true,
+          accountType: 'owner',
         });
+        console.log('[set-role] Created users record:', created ? `id=${created.userId} roleSelected=${created.roleSelected}` : 'create returned null');
       }
-      console.log("lastSelectedRole updated in USERS table:", normalizedEmail, role);
+      // Read-back verify — if the table write failed silently this will reveal it
+      const verify = await DynamoUser.getUserByEmail(normalizedEmail);
+      console.log('[set-role] Read-back verify:', verify ? `roleSelected=${verify.roleSelected} lastSelectedRole=${verify.lastSelectedRole}` : 'RECORD NOT FOUND AFTER WRITE');
     } catch (err) {
-      console.warn('Failed to update USERS table, falling back to google_users:', err?.message);
+      console.error('[set-role] Failed to update USERS table:', err?.message, err?.stack);
       if (user?.id) {
         await DynamoGoogleUser.updateGoogleUser(user.id, { role, roleSelected: true });
       }
@@ -495,12 +509,40 @@ router.post("/set-role", async (req, res) => {
       if (!vendor && email) {
         vendor = await DynamoVendor.createVendor({ email, name: user.displayName || email.split('@')[0], status: 'pending', hasFilledForm: false });
         console.log("Created vendor record for:", email);
-        // Seed default RBAC roles for the new vendor org
+      }
+      // Always attempt to provision RBAC (idempotent — skips if records already exist)
+      if (vendor && ownerUserId) {
+        try {
+          await provisionOrgOwner({
+            orgId: vendor.vendorId || vendor.id,
+            orgType: 'vendor',
+            orgName: vendor.name || email.split('@')[0],
+            userId: ownerUserId,
+            email,
+          });
+          console.log('[set-role] Provisioned RBAC org owner for vendor:', vendor.vendorId || vendor.id);
+        } catch (seedErr) {
+          console.warn('[set-role] Failed to provision RBAC for vendor (non-blocking):', seedErr?.message);
+        }
+      } else if (vendor) {
+        // Fallback: at least seed roles if no userId (e.g. Google path without cognitoId)
         try {
           await seedRolesForOrg(vendor.vendorId || vendor.id, 'vendor');
-          console.log('Seeded default RBAC roles for vendor:', vendor.vendorId || vendor.id);
         } catch (seedErr) {
-          console.warn('Failed to seed RBAC roles for vendor (non-blocking):', seedErr?.message);
+          console.warn('[set-role] Failed to seed roles for vendor (non-blocking):', seedErr?.message);
+        }
+      }
+      // Stamp vendorOrgId on the users record so it matches the owner example shape
+      if (vendor && ownerUserId) {
+        try {
+          const usersRec = await DynamoUser.getUserByEmail(String(user.email || '').trim().toLowerCase());
+          if (usersRec) {
+            await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
+              vendorOrgId: vendor.vendorId || vendor.id,
+            });
+          }
+        } catch (patchErr) {
+          console.warn('[set-role] Failed to stamp vendorOrgId on users record (non-blocking):', patchErr?.message);
         }
       }
       nextRoute = "/Form1";
@@ -521,14 +563,39 @@ router.post("/set-role", async (req, res) => {
               contactName: user?.displayName || (userEmail.split('@')[0]),
             });
             console.log('Provisioned client profile for', userEmail);
-            // Seed default RBAC roles for the new client org
+            // Provision full RBAC records: org + default roles + owner member record
             const newClientId = provisionRes?.data?.data?.clientId;
             if (newClientId) {
+              if (ownerUserId) {
+                try {
+                  await provisionOrgOwner({
+                    orgId: newClientId,
+                    orgType: 'client',
+                    orgName: user?.displayName || userEmail.split('@')[0],
+                    userId: ownerUserId,
+                    email: userEmail,
+                  });
+                  console.log('[set-role] Provisioned RBAC org owner for client:', newClientId);
+                } catch (seedErr) {
+                  console.warn('[set-role] Failed to provision RBAC for client (non-blocking):', seedErr?.message);
+                }
+              } else {
+                try {
+                  await seedRolesForOrg(newClientId, 'client');
+                } catch (seedErr) {
+                  console.warn('[set-role] Failed to seed roles for client (non-blocking):', seedErr?.message);
+                }
+              }
+              // Stamp clientOrgId on the users record
               try {
-                await seedRolesForOrg(newClientId, 'client');
-                console.log('Seeded default RBAC roles for client:', newClientId);
-              } catch (seedErr) {
-                console.warn('Failed to seed RBAC roles for client (non-blocking):', seedErr?.message);
+                const usersRec = await DynamoUser.getUserByEmail(String(userEmail).trim().toLowerCase());
+                if (usersRec) {
+                  await DynamoUser.updateUser(usersRec.userId || usersRec.id, {
+                    clientOrgId: newClientId,
+                  });
+                }
+              } catch (patchErr) {
+                console.warn('[set-role] Failed to stamp clientOrgId on users record (non-blocking):', patchErr?.message);
               }
             }
           }
@@ -640,22 +707,19 @@ router.get("/verify", async (req, res) => {
 
     // If the user has a vendor record, treat them as vendor by default (prevents new vendor accounts
     // from bouncing to /role-selection when they haven't explicitly selected a role yet).
+    // ALWAYS use normalizedEmail — vendor records are created with lowercase email by set-role.
     let vendorRecord = null;
     try {
-      vendorRecord = await DynamoVendor.getVendorByEmail(email);
-      if (!vendorRecord && normalizedEmail !== email) {
-        vendorRecord = await DynamoVendor.getVendorByEmail(normalizedEmail);
-      }
+      vendorRecord = await DynamoVendor.getVendorByEmail(normalizedEmail);
     } catch (e) {
       console.warn('[verify] DynamoVendor.getVendorByEmail failed:', e?.message);
     }
+    console.log(`[verify] email=${normalizedEmail} vendorRecord=${vendorRecord ? vendorRecord.vendorId : 'null'}`);
 
     let userRecord = null;
     try {
-      userRecord = await DynamoUser.getUserByEmail(email);
-      if (!userRecord && normalizedEmail !== email) {
-        userRecord = await DynamoUser.getUserByEmail(normalizedEmail);
-      }
+      userRecord = await DynamoUser.getUserByEmail(normalizedEmail);
+      console.log(`[verify] userRecord for ${normalizedEmail}:`, userRecord ? `roleSelected=${userRecord.roleSelected} lastSelectedRole=${userRecord.lastSelectedRole}` : 'NOT FOUND');
     } catch (e) {
       console.warn('[verify] DynamoUser.getUserByEmail failed:', e?.message);
     }

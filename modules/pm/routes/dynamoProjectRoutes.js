@@ -8,9 +8,12 @@ import { requirePermission } from '../../rbac/middleware/requirePermission.js';
 
 const router = express.Router();
 
-router.use(authenticateCognitoJwt);
-router.use(attachVendorId);
-router.use(attachRBAC);
+// Scope auth + RBAC only to /projects paths.
+// This router is mounted at /api (not /api/projects), so a bare router.use()
+// with no path runs for ALL /api/* requests — intercepting unrelated routes
+// like /api/vendor/me and /api/vendor/mfa/status before they reach their
+// own routers. Scoping prevents that bleed-over.
+router.use('/projects', authenticateCognitoJwt, attachVendorId, attachRBAC);
 
 // Create a new project
 router.post('/projects', requirePermission('projects', 'create'), dynamoProjectController.createProject);

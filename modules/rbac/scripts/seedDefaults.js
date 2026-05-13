@@ -8,7 +8,7 @@
 // USAGE: node modules/rbac/scripts/seedDefaults.js
 // ============================================================
 
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
@@ -85,6 +85,84 @@ export async function seedRolesForOrg(orgId, orgType) {
         console.error(`  ✗ Role ${role.roleId} for org ${orgId}:`, error.message);
       }
     }
+  }
+}
+
+// ──────────────────────────────────────
+// PROVISION NEW ORG OWNER (called at signup)
+// ──────────────────────────────────────
+
+/**
+ * Create the full RBAC setup for a brand-new organization owner.
+ * Called immediately after vendor/client record creation during sign-up.
+ * Safe to re-run — all writes use ConditionExpression so existing records
+ * are never overwritten.
+ *
+ * Creates:
+ *   1. rbac_organizations record
+ *   2. Default rbac_roles for the org
+ *   3. rbac_members record — owner as Super Admin (active)
+ *
+ * @param {Object} params
+ * @param {string} params.orgId        - vendorId or clientId
+ * @param {'vendor'|'client'} params.orgType
+ * @param {string} params.orgName      - Display name for the org
+ * @param {string} params.userId       - Owner's Cognito sub (JWT decoded.sub)
+ * @param {string} params.email        - Owner's email
+ * @returns {Promise<void>}
+ */
+export async function provisionOrgOwner({ orgId, orgType, orgName, userId, email }) {
+  const now = new Date().toISOString();
+
+  // 1. Create rbac_organizations record
+  try {
+    await docClient.send(new PutCommand({
+      TableName: TABLES.ORGANIZATIONS,
+      Item: {
+        orgId,
+        orgType,
+        orgName: orgName || `${orgType}-${orgId}`,
+        superAdminUserId: userId,
+        subscriptionPlan: 'free',
+        maxSeats: 3,
+        currentSeatCount: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+      ConditionExpression: 'attribute_not_exists(orgId)',
+    }));
+  } catch (err) {
+    // Already exists — that's fine (idempotent re-run)
+    if (err.name !== 'ConditionalCheckFailedException') throw err;
+  }
+
+  // 2. Seed default roles for this org
+  await seedRolesForOrg(orgId, orgType);
+
+  // 3. Create rbac_members record — owner as Super Admin
+  try {
+    await docClient.send(new PutCommand({
+      TableName: TABLES.MEMBERS,
+      Item: {
+        orgId,
+        userId,
+        email: String(email || '').trim().toLowerCase(),
+        displayName: orgName || (email ? String(email).split('@')[0] : 'Owner'),
+        roleId: 'super_admin',
+        roleName: 'Super Admin',
+        orgType,
+        status: 'active',
+        platformAccess: ['vendor', 'client', 'sales'],
+        invitedBy: 'system',
+        isOrgOwner: true,
+        joinedAt: now,
+        lastActiveAt: now,
+        updatedAt: now,
+      },
+      ConditionExpression: 'attribute_not_exists(orgId)',
+    }));
+  } catch (err) {
+    if (err.name !== 'ConditionalCheckFailedException') throw err;
   }
 }
 
