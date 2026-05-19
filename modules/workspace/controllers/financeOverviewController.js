@@ -7,8 +7,10 @@ const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 const workspaceInvoicesTable = 'workspace_invoices';
 const workspaceQuotesTable = 'workspace_quotations';
 const salesQuotationsTable = process.env.QUOTATION_OF_VENDOR_TABLE || 'quotations_Of_Vendors';
+const b2bDebitNotesTable = 'b2b_debit_notes';
 const b2bOrdersTable = process.env.B2B_ORDERS_TABLE || 'Orders';
 const vendorsTable = 'vendors';
+const clientsTable = 'clients';
 
 /**
  * Get vendorId from Cognito sub by looking up the vendors table
@@ -69,6 +71,45 @@ const getVendorIdFromSub = async (cognitoSub, email) => {
 };
 
 /**
+ * Get clientId from email by looking up the clients table
+ */
+const getClientIdFromEmail = async (email) => {
+  if (!email) {
+    console.log('📊 getClientIdFromEmail: No email provided');
+    return null;
+  }
+  try {
+    console.log('📊 getClientIdFromEmail: Looking up clientId for email:', email.toLowerCase());
+    const params = {
+      TableName: clientsTable,
+      FilterExpression: '#email = :email',
+      ExpressionAttributeNames: {
+        '#email': 'email'
+      },
+      ExpressionAttributeValues: {
+        ':email': { S: email.toLowerCase() }
+      }
+    };
+
+    console.log('📊 getClientIdFromEmail: Scanning clients table with params:', params);
+    const command = new ScanCommand(params);
+    const { Items } = await dbClient.send(command);
+
+    if (Items && Items.length > 0) {
+      const client = unmarshall(Items[0]);
+      console.log('📊 getClientIdFromEmail: Found client record:', { clientId: client.clientId, email: client.email });
+      return client.clientId;
+    }
+
+    console.log('⚠️ getClientIdFromEmail: Could not find client record for email:', email.toLowerCase());
+    return null;
+  } catch (error) {
+    console.error('❌ getClientIdFromEmail: Error looking up clientId from email:', error);
+    return null;
+  }
+};
+
+/**
  * Get comprehensive financial overview for a vendor
  * Aggregates data from: workspace invoices/quotes, sales quotations, and B2B purchases
  * @route GET /api/finance/overview
@@ -85,26 +126,52 @@ const getFinanceOverview = async (req, res) => {
       });
     }
 
-    // console.log('📊 Fetching finance overview for Cognito sub:', cognitoSub);
+    console.log('📊 Fetching finance overview for Cognito sub:', cognitoSub);
 
     // Look up actual vendorId from vendors table
     const email = req.auth?.email || req.user?.email;
     const vendorId = await getVendorIdFromSub(cognitoSub, email);
-    // console.log('📊 Resolved vendorId:', vendorId);
+    console.log('📊 Resolved vendorId:', vendorId);
 
-    // Parallel queries to all 4 tables
-    const [workspaceInvoices, workspaceQuotes, salesQuotations, b2bOrders] = await Promise.all([
+    // Get clientId from clients table using email
+    const clientId = await getClientIdFromEmail(email);
+    console.log('📊 Resolved clientId from clients table:', clientId);
+
+    // Parallel queries to all 5 tables
+    const [workspaceInvoices, workspaceQuotes, allSalesQuotations, b2bDebitNotes, b2bVendorOrders] = await Promise.all([
       scanTableByVendorId(workspaceInvoicesTable, 'vendorId', vendorId),
       scanTableByVendorId(workspaceQuotesTable, 'vendorId', vendorId),
       scanTableByVendorId(salesQuotationsTable, 'vendorId', vendorId),
-      scanTableByVendorId(b2bOrdersTable, 'userId', vendorId), // B2B uses userId
+      scanTableByVendorId(b2bDebitNotesTable, 'vendorId', vendorId),
+      clientId ? scanTableByVendorId(b2bOrdersTable, 'clientId', clientId) : [], // Vendor's own orders use clientId from clients table
     ]);
 
-    // console.log('📊 Query results:');
-    // console.log('  - workspaceInvoices:', workspaceInvoices.length, 'items');
-    // console.log('  - workspaceQuotes:', workspaceQuotes.length, 'items');
-    // console.log('  - salesQuotations:', salesQuotations.length, 'items');
-    // console.log('  - b2bOrders:', b2bOrders.length, 'items');
+    console.log('📊 Query results:');
+    console.log('  - workspaceInvoices:', workspaceInvoices.length, 'items');
+    console.log('  - workspaceQuotes:', workspaceQuotes.length, 'items');
+    console.log('  - allSalesQuotations:', allSalesQuotations.length, 'items');
+    console.log('  - b2bDebitNotes:', b2bDebitNotes.length, 'items');
+    console.log('  - b2bVendorOrders:', b2bVendorOrders.length, 'items');
+
+    // Only count confirmed sales quotations (PO has been raised) as revenue
+    const salesQuotations = allSalesQuotations.filter(
+      q => String(q.status ?? '').trim().toLowerCase() === 'po raised for order'
+    );
+    console.log('  - confirmed salesQuotations (po raised for order):', salesQuotations.length, 'items');
+
+    // Combine both B2B expense sources: debit notes from logistics + vendor's own orders
+    const b2bOrders = [...b2bDebitNotes, ...b2bVendorOrders];
+    console.log('  - combined b2bOrders:', b2bOrders.length, 'items');
+    
+    // Log B2B orders details
+    console.log('  - B2B Debit Notes details:', b2bDebitNotes.map(note => ({
+      id: note.debitNoteId || note.orderId,
+      amount: note.totalAmount || note.amount || note.subtotal
+    })));
+    console.log('  - B2B Vendor Orders details:', b2bVendorOrders.map(order => ({
+      id: order.orderId,
+      amount: order.amount
+    })));
 
     // Process and aggregate data
     const monthlyData = buildMonthlyData({
@@ -123,6 +190,7 @@ const getFinanceOverview = async (req, res) => {
 
     const revenueBySource = buildRevenueBySource({
       workspaceRevenue: summary.workspaceRevenue,
+      workspaceQuoteValue: summary.workspaceQuoteValue,
       salesRevenue: summary.salesRevenue
     });
 
@@ -143,10 +211,12 @@ const getFinanceOverview = async (req, res) => {
         },
         sales: {
           quotations: salesQuotations,
+          allQuotations: allSalesQuotations,
           totalRevenue: summary.salesRevenue
         },
         b2b: {
-          purchases: b2bOrders,
+          debitNotes: b2bDebitNotes,
+          orders: b2bVendorOrders,
           totalSpend: summary.b2bSpend
         },
         summary,
@@ -168,29 +238,30 @@ const getFinanceOverview = async (req, res) => {
 };
 
 /**
- * Scan DynamoDB table and filter by vendorId or userId
+ * Scan DynamoDB table and filter by a key field, with full pagination.
  */
 const scanTableByVendorId = async (tableName, keyField, value) => {
   try {
-    const params = {
+    const baseParams = {
       TableName: tableName,
       FilterExpression: `#${keyField} = :value`,
-      ExpressionAttributeNames: {
-        [`#${keyField}`]: keyField
-      },
-      ExpressionAttributeValues: {
-        ':value': { S: value }
-      }
+      ExpressionAttributeNames: { [`#${keyField}`]: keyField },
+      ExpressionAttributeValues: { ':value': { S: value } }
     };
 
-    const command = new ScanCommand(params);
-    const { Items } = await dbClient.send(command);
+    let allItems = [];
+    let lastKey = undefined;
 
-    if (!Items || Items.length === 0) {
-      return [];
-    }
+    do {
+      const params = lastKey ? { ...baseParams, ExclusiveStartKey: lastKey } : baseParams;
+      const result = await dbClient.send(new ScanCommand(params));
+      if (result.Items) {
+        allItems = allItems.concat(result.Items.map(item => unmarshall(item)));
+      }
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
 
-    return Items.map(item => unmarshall(item));
+    return allItems;
   } catch (error) {
     console.error(`Error scanning table ${tableName}:`, error);
     return [];
@@ -213,9 +284,8 @@ const buildMonthlyData = ({ workspaceInvoices, workspaceQuotes, salesQuotations,
 
     const workspaceRevenue = sumAmountsForMonth(workspaceInvoices, monthStart, monthEnd, 'total');
     const workspaceQuoteValue = sumAmountsForMonth(workspaceQuotes, monthStart, monthEnd, 'total');
-    const salesRevenue = sumAmountsForMonth(salesQuotations, monthStart, monthEnd, 'totalAmount') || 
-                         sumAmountsForMonth(salesQuotations, monthStart, monthEnd, 'amount');
-    const b2bSpend = sumAmountsForMonth(b2bOrders, monthStart, monthEnd, 'amount');
+    const salesRevenue = sumSalesQuotationAmountsForMonth(salesQuotations, monthStart, monthEnd);
+    const b2bSpend = sumAmountsForMonth(b2bOrders, monthStart, monthEnd, 'totalAmount');
 
     monthlyData.push({
       month: monthLabel,
@@ -223,9 +293,9 @@ const buildMonthlyData = ({ workspaceInvoices, workspaceQuotes, salesQuotations,
       workspaceQuoteValue,
       salesRevenue,
       b2bSpend,
-      totalRevenue: workspaceRevenue + salesRevenue,
+      totalRevenue: workspaceRevenue + workspaceQuoteValue + salesRevenue,
       totalExpenses: b2bSpend,
-      netProfit: workspaceRevenue + salesRevenue - b2bSpend
+      netProfit: workspaceRevenue + workspaceQuoteValue + salesRevenue - b2bSpend
     });
   }
 
@@ -242,9 +312,14 @@ const sumAmountsForMonth = (items, monthStart, monthEnd, amountField = 'total') 
 
     const date = new Date(itemDate);
     if (date >= monthStart && date <= monthEnd) {
-      const amount = typeof item[amountField] === 'string' 
-        ? parseFloat(item[amountField].replace(/,/g, '')) 
-        : item[amountField];
+      // Try multiple field names for B2B orders
+      let amount = item[amountField];
+      if (!amount || isNaN(amount)) {
+        amount = item.amount || item.totalAmount || item.subtotal;
+      }
+      if (typeof amount === 'string') {
+        amount = parseFloat(amount.replace(/,/g, ''));
+      }
       return sum + (isNaN(amount) ? 0 : amount);
     }
     return sum;
@@ -257,13 +332,26 @@ const sumAmountsForMonth = (items, monthStart, monthEnd, amountField = 'total') 
 const buildSummary = ({ workspaceInvoices, workspaceQuotes, salesQuotations, b2bOrders }) => {
   const workspaceRevenue = sumAmounts(workspaceInvoices, 'total');
   const workspaceQuoteValue = sumAmounts(workspaceQuotes, 'total');
-  const salesRevenue = sumAmounts(salesQuotations, 'totalAmount') || sumAmounts(salesQuotations, 'amount');
-  const b2bSpend = sumAmounts(b2bOrders, 'amount');
+  const salesRevenue = sumSalesQuotationAmounts(salesQuotations);
+  const b2bSpend = sumAmounts(b2bOrders, 'totalAmount');
+  
+  console.log('📊 buildSummary: B2B spend calculation:');
+  console.log('  - b2bOrders length:', b2bOrders.length);
+  console.log('  - b2bSpend (using totalAmount field):', b2bSpend);
+  
+  // Also try with 'amount' field for vendor orders
+  const b2bSpendAmountField = sumAmounts(b2bOrders, 'amount');
+  console.log('  - b2bSpend (using amount field):', b2bSpendAmountField);
 
-  const totalRevenue = workspaceRevenue + salesRevenue;
+  const totalRevenue = workspaceRevenue + workspaceQuoteValue + salesRevenue;
   const totalExpenses = b2bSpend;
   const netProfit = totalRevenue - totalExpenses;
   const profitMargin = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100).toFixed(1) : 0;
+
+  console.log('📊 buildSummary: Summary:');
+  console.log('  - totalRevenue:', totalRevenue);
+  console.log('  - totalExpenses:', totalExpenses);
+  console.log('  - netProfit:', netProfit);
 
   // Calculate growth (simple month-over-month comparison)
   const monthlyData = buildMonthlyData({ workspaceInvoices, workspaceQuotes, salesQuotations, b2bOrders });
@@ -289,7 +377,8 @@ const buildSummary = ({ workspaceInvoices, workspaceQuotes, salesQuotations, b2b
     salesRevenue,
     b2bSpend,
     activeStreams: [
-      workspaceRevenue > 0 ? 'workspace' : null,
+      workspaceRevenue > 0 ? 'workspace_invoices' : null,
+      workspaceQuoteValue > 0 ? 'workspace_quotes' : null,
       salesRevenue > 0 ? 'sales' : null,
       b2bSpend > 0 ? 'b2b' : null
     ].filter(Boolean).length
@@ -297,22 +386,71 @@ const buildSummary = ({ workspaceInvoices, workspaceQuotes, salesQuotations, b2b
 };
 
 /**
- * Sum all amounts in an array
+ * Sum amounts from items
  */
 const sumAmounts = (items, amountField = 'total') => {
   return items.reduce((sum, item) => {
-    const amount = typeof item[amountField] === 'string' 
-      ? parseFloat(item[amountField].replace(/,/g, '')) 
-      : item[amountField];
+    // Try multiple field names for B2B orders
+    let amount = item[amountField];
+    if (!amount || isNaN(amount)) {
+      amount = item.amount || item.totalAmount || item.subtotal;
+    }
+    if (typeof amount === 'string') {
+      amount = parseFloat(amount.replace(/,/g, ''));
+    }
     return sum + (isNaN(amount) ? 0 : amount);
   }, 0);
 };
 
 /**
+ * Resolve the monetary value of a sales quotation.
+ * The quotations_Of_Vendors table stores amounts as quantity × rate.
+ * Falls back through totalAmount → amount → totalCost → quantity*rate.
+ */
+const getSalesQuotationAmount = (quote) => {
+  const parse = (val) => {
+    if (val === undefined || val === null) return NaN;
+    const n = typeof val === 'string' ? parseFloat(val.replace(/,/g, '')) : Number(val);
+    return isNaN(n) ? NaN : n;
+  };
+
+  for (const field of ['totalAmount', 'amount', 'totalCost', 'grandTotal']) {
+    const val = parse(quote[field]);
+    if (!isNaN(val) && val > 0) return val;
+  }
+
+  const qty = parse(quote.quantity);
+  const rate = parse(quote.rate);
+  if (!isNaN(qty) && !isNaN(rate)) return qty * rate;
+
+  return 0;
+};
+
+/**
+ * Sum sales quotation amounts using getSalesQuotationAmount
+ */
+const sumSalesQuotationAmounts = (items) =>
+  items.reduce((sum, item) => sum + getSalesQuotationAmount(item), 0);
+
+/**
+ * Sum sales quotation amounts within a date range
+ */
+const sumSalesQuotationAmountsForMonth = (items, monthStart, monthEnd) =>
+  items.reduce((sum, item) => {
+    const itemDate = item.createdAt || item.invoiceDate || item.quoteDate;
+    if (!itemDate) return sum;
+    const date = new Date(itemDate);
+    if (date >= monthStart && date <= monthEnd) {
+      return sum + getSalesQuotationAmount(item);
+    }
+    return sum;
+  }, 0);
+
+/**
  * Build revenue by source breakdown for doughnut chart
  */
-const buildRevenueBySource = ({ workspaceRevenue, salesRevenue }) => {
-  const total = workspaceRevenue + salesRevenue;
+const buildRevenueBySource = ({ workspaceRevenue, workspaceQuoteValue, salesRevenue }) => {
+  const total = workspaceRevenue + workspaceQuoteValue + salesRevenue;
   
   if (total === 0) {
     return [
@@ -321,7 +459,8 @@ const buildRevenueBySource = ({ workspaceRevenue, salesRevenue }) => {
   }
 
   return [
-    { label: 'Workspace Projects', value: workspaceRevenue, color: '#0f766e' },
+    { label: 'Workspace Invoices', value: workspaceRevenue, color: '#0f766e' },
+    { label: 'Workspace Quotes', value: workspaceQuoteValue, color: '#0ea5e9' },
     { label: 'Sales (RFQ Responses)', value: salesRevenue, color: '#10b981' }
   ].filter(item => item.value > 0);
 };
@@ -362,29 +501,32 @@ const buildRecentTransactions = ({ workspaceInvoices, workspaceQuotes, salesQuot
 
   // Process sales quotations
   salesQuotations.forEach(quote => {
-    const amount = typeof quote.totalAmount === 'string' ? parseFloat(quote.totalAmount.replace(/,/g, '')) : quote.totalAmount || 
-                  typeof quote.amount === 'string' ? parseFloat(quote.amount.replace(/,/g, '')) : quote.amount;
+    const amount = getSalesQuotationAmount(quote);
     transactions.push({
       id: quote.quotationId || 'N/A',
       description: `Sales Quote - ${quote.productName || quote.item || 'RFQ Response'}`,
       date: quote.createdAt,
-      amount: amount || 0,
+      amount,
       type: 'income',
       status: quote.status || 'unknown',
       source: 'sales'
     });
   });
 
-  // Process B2B purchases (expenses)
-  b2bOrders.forEach(order => {
-    const amount = typeof order.amount === 'string' ? parseFloat(order.amount.replace(/,/g, '')) : order.amount;
+  // Process B2B debit notes (expenses from logistics)
+  b2bOrders.forEach(item => {
+    // Debit notes have totalAmount, Orders have amount
+    const raw = item.totalAmount ?? item.amount ?? item.subtotal;
+    const amount = typeof raw === 'string' ? parseFloat(raw.replace(/,/g, '')) : Number(raw);
+    const id = item.debitNoteId || item.orderId || 'N/A';
+    const isDebitNote = !!item.debitNoteId;
     transactions.push({
-      id: order.orderId || 'N/A',
-      description: `B2B Purchase - ${order.productName || 'Order'}`,
-      date: order.createdAt || order.date,
-      amount: -(amount || 0), // Negative for expenses
+      id,
+      description: isDebitNote ? `B2B Debit Note - ${item.orderId || id}` : `B2B Order - ${item.productName || item.orderId || 'Purchase'}`,
+      date: item.createdAt || item.issueDate || item.date,
+      amount: -(isNaN(amount) ? 0 : amount),
       type: 'expense',
-      status: order.status || 'unknown',
+      status: item.status || 'unknown',
       source: 'b2b'
     });
   });

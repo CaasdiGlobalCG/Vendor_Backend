@@ -334,6 +334,7 @@ async function loadModules() {
     app.use('/api', workspaceModule.dynamoWorkspaceRoutes);
     app.use('/api', workspaceModule.dynamoWorkspaceMessageRoutes);
     app.use('/api/workspace-files', workspaceModule.workspaceFileRoutes);
+    app.use('/api/finance', workspaceModule.financeRoutes); // Finance overview routes
     
     // Also register procurement requests at root level for direct access
     const procurementRequestsRouter = await import('./modules/workspace/routes/procurementRequestsRoutes.js');

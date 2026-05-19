@@ -6,6 +6,7 @@ export { default as workspaceQuotesRoutes } from './routes/workspaceQuotesRoutes
 export { default as dynamoWorkspaceRoutes } from './routes/dynamoWorkspaceRoutes.js';
 export { default as dynamoWorkspaceMessageRoutes } from './routes/dynamoWorkspaceMessageRoutes.js';
 export { default as purchaseRequisitionsRoutes } from './routes/purchaseRequisitionsRoutes.js';
+export { default as financeRoutes } from './routes/financeRoutes.js';
 
 // Export controllers for direct access if needed
 export * as workspaceController from './controllers/workspaceController.js';
