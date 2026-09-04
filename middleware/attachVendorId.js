@@ -20,7 +20,7 @@ const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
 
 // Reusable v3 doc client — shared across all requests
 const ddbClient = new DynamoDBClient({
-  region: process.env.AWS_REGION || 'us-east-1',
+  region: process.env.AWS_REGION || 'ap-south-1',
 });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
 

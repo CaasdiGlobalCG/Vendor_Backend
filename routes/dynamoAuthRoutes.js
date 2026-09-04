@@ -83,7 +83,7 @@ async function getVendorAccessGateByEmail(email) {
   try {
     const { DynamoDBDocumentClient, QueryCommand, UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
     const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
-    const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+    const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
     const _doc = DynamoDBDocumentClient.from(_ddb);
 
     const result = await _doc.send(new QueryCommand({
@@ -247,7 +247,7 @@ router.get(
           const { DynamoDBDocumentClient, QueryCommand } = await import('@aws-sdk/lib-dynamodb');
           const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
           const { AdminGetUserCommand } = await import('@aws-sdk/client-cognito-identity-provider');
-          const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
           const _doc = DynamoDBDocumentClient.from(_ddb);
 
           // Look up Cognito sub for this email to query rbac_members by userId
@@ -710,7 +710,7 @@ router.get("/verify", async (req, res) => {
       try {
         const { DynamoDBDocumentClient: DocClient, QueryCommand: QCmd, GetCommand: GCmd } = await import('@aws-sdk/lib-dynamodb');
         const { DynamoDBClient: DDBClient } = await import('@aws-sdk/client-dynamodb');
-        const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+        const _ddb = new DDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
         const _doc = DocClient.from(_ddb);
 
         const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';

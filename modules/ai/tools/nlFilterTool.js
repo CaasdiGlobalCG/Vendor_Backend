@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
-const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
 
 // ── Table aliases and field mappings ──

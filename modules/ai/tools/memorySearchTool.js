@@ -11,7 +11,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import aiConfig from '../config/aiConfig.js';
 
-const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
 const TABLE = aiConfig.memory.tableName;
 

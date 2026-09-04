@@ -14,7 +14,7 @@ import {
   buildProductUpdateEmail,
 } from './marketingEmailTemplates.js';
 
-const sesClient = new SESClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const sesClient = new SESClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const FROM_ADDRESS = process.env.SES_FROM_EMAIL || 'noreply@caasdiglobal.in';
 const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET || process.env.JWT_SECRET || 'vendor_unsubscribe_secret_2026';
 const VENDOR_FRONTEND_URL = process.env.VENDOR_FRONTEND_URL || 'https://www.caasdiglobal.in';

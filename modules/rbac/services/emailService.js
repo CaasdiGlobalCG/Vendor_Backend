@@ -15,7 +15,7 @@ import { buildInvitationEmail, buildRemovalEmail } from './emailTemplates.js';
 // AWS SES client — uses shared AWS credentials from env vars
 // (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
 // ──────────────────────────────────────
-const sesClient = new SESClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const sesClient = new SESClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 
 /** Verified sender address for all RBAC invitation emails */
 const DEFAULT_FROM = process.env.SES_FROM_EMAIL || 'noreply@caasdiglobal.in';

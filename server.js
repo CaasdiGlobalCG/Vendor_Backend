@@ -324,6 +324,7 @@ async function loadModules() {
     app.use('/api/vendor', vendorModule.productRoutes); // Product routes
     app.use('/api/vendor', vendorModule.serviceRoutes); // Service routes
     app.use('/api/vendor/mfa', vendorModule.mfaRoutes); // MFA routes
+    app.use('/api/physical-kyc', vendorModule.physicalKYCRoutes); // Physical KYC routes
     console.log('✅ Vendor Module loaded');
 
     // Load Workspace Module
@@ -407,6 +408,10 @@ async function loadModules() {
     // Initialize proactive alerts cron (anomaly detection every 15 min)
     const { initializeProactiveAlertsCron } = await import('./modules/ai/services/proactiveAlertsCron.js');
     initializeProactiveAlertsCron();
+
+    // Initialize Physical KYC visit reminder cron (daily 9 AM IST)
+    const { initPhysicalKYCReminderJob } = await import('./scripts/physicalKYCReminderJob.js');
+    initPhysicalKYCReminderJob();
   } catch (error) {
     console.error('❌ Error loading modules:', error);
   }

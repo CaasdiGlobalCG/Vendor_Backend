@@ -3,9 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 // Configure AWS Chime SDK Meetings
 const chimeSdkMeetings = new AWS.ChimeSDKMeetings({
-  region: 'us-east-1',
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  region: 'ap-south-1',
+  
 });
 
 /**
@@ -41,7 +40,7 @@ export const createChimeMeeting = async (meetingData) => {
     const meetingParams = {
       ClientRequestToken: meetingId,
       ExternalMeetingId: externalMeetingId,
-      MediaRegion: 'us-east-1',
+      MediaRegion: 'ap-south-1',
       MeetingHostId: initiatorId
     };
 

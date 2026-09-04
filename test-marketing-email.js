@@ -9,7 +9,7 @@ import { buildPromotionsEmail, buildNewsletterEmail } from './modules/vendor/ser
 
 const TO = 'dhanush@caasdiglobal.in';
 const FROM = process.env.SES_FROM_EMAIL || 'noreply@caasdiglobal.in';
-const ses = new SESClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const ses = new SESClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 
 async function send(subject, html) {
   const cmd = new SendEmailCommand({

@@ -6,6 +6,7 @@ export { default as dynamoVendorRoutes } from './routes/dynamoVendorRoutes.js';
 export { default as productRoutes } from './routes/productRoutes.js';
 export { default as serviceRoutes } from './routes/serviceRoutes.js';
 export { default as mfaRoutes } from './routes/mfaRoutes.js';
+export { default as physicalKYCRoutes } from './routes/physicalKYCRoutes.js';
 
 // Export controllers for direct access if needed
 export * as vendorController from './controllers/vendorController.js';

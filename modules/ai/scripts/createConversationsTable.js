@@ -12,7 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '..', '.env') });
 
-const client = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const client = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 
 const TABLE_NAME = process.env.AI_CONVERSATIONS_TABLE || 'ai_conversations';
 

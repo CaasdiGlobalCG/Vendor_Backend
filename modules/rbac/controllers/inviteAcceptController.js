@@ -17,7 +17,7 @@ import { TABLES, EXISTING_TABLES } from '../config/tables.js';
 import crypto from 'crypto';
 
 const cognitoClient = new CognitoIdentityProviderClient({
-  region: process.env.AWS_REGION || 'us-east-1',
+  region: process.env.AWS_REGION || 'ap-south-1',
 });
 
 // ──────────────────────────────────────

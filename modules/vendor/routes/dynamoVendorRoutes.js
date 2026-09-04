@@ -39,7 +39,18 @@ const upload = multer({ storage: storage });
 const uploadMiddleware = upload.fields([
   { name: 'uploadDocument', maxCount: 1 },
   { name: 'isoCertificate', maxCount: 1 },
-  { name: 'additionalDocument', maxCount: 1 }
+  { name: 'additionalDocument', maxCount: 1 },
+  { name: 'blankCheque', maxCount: 1 },
+  { name: 'gstCertificate', maxCount: 1 },
+  { name: 'panCertificate', maxCount: 1 },
+  { name: 'factoryLicence', maxCount: 1 },
+  { name: 'pcbConsent', maxCount: 1 },
+  { name: 'esicEpfCompliance', maxCount: 1 },
+  { name: 'fireSafetyNoc', maxCount: 1 },
+  { name: 'statutoryCompliance', maxCount: 1 },
+  { name: 'professionalIndemnity', maxCount: 1 },
+  { name: 'cyberLiabilityInsurance', maxCount: 1 },
+  { name: 'dataProtectionCompliance', maxCount: 1 },
 ]);
 
 // Middleware for handling profile image uploads
@@ -159,7 +170,7 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
         try {
           const { DynamoDBDocumentClient, QueryCommand, GetCommand: GCmd } = await import('@aws-sdk/lib-dynamodb');
           const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
-          const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _ddb = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
           const _doc = DynamoDBDocumentClient.from(_ddb);
           const MEMBERS_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
           const VENDORS_TABLE_NAME = process.env.VENDORS_TABLE || 'vendors';
@@ -218,7 +229,7 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
         try {
           const { DynamoDBDocumentClient: DocC2, QueryCommand: QC2 } = await import('@aws-sdk/lib-dynamodb');
           const { DynamoDBClient: DC2 } = await import('@aws-sdk/client-dynamodb');
-          const _ddb2 = new DC2({ region: process.env.AWS_REGION || 'us-east-1' });
+          const _ddb2 = new DC2({ region: process.env.AWS_REGION || 'ap-south-1' });
           const _doc2 = DocC2.from(_ddb2);
           const MEM_TABLE = process.env.RBAC_MEMBERS_TABLE || 'rbac_members';
           const removedResult = await _doc2.send(new QC2({
@@ -336,18 +347,19 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
 
     if (computedHasFilledForm && !vendor.hasFilledForm && !vendor.isGoogleUser) {
       try {
-        const nextStatus = vendor.status === 'approved' ? 'approved' : 'pending';
+        // Only update hasFilledForm to true, don't change status
         await DynamoVendor.updateVendor(vendor.id, {
           hasFilledForm: true,
-          status: nextStatus,
         });
         vendor.hasFilledForm = true;
-        vendor.status = nextStatus;
       } catch (e) {
         console.warn('Failed to persist hasFilledForm update for vendor:', e?.message || e);
         vendor.hasFilledForm = computedHasFilledForm;
       }
-    } else {
+    }
+    // Don't overwrite hasFilledForm if it's already true in the database
+    // Only use computed value if the stored value is false/missing
+    if (!vendor.hasFilledForm) {
       vendor.hasFilledForm = computedHasFilledForm;
     }
 

@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '..', '.env') });
 
-const region = process.env.AWS_REGION || 'us-east-1';
+const region = process.env.AWS_REGION || 'ap-south-1';
 
 // Use the default credential provider chain (reads env vars lazily at request
 // time). Passing explicit { accessKeyId, secretAccessKey } here would freeze

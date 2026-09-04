@@ -23,7 +23,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import cron from 'node-cron';
 
-const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
 
 const SCHEDULES_TABLE = process.env.VENDOR_SCHEDULES_TABLE || 'vendor_schedules';

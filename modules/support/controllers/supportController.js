@@ -1188,7 +1188,7 @@ async function uploadToS3(file, ticketId) {
     Body:        file.buffer,
     ContentType: file.mimetype,
   }).promise();
-  const region = process.env.AWS_REGION || 'us-east-1';
+  const region = process.env.AWS_REGION || 'ap-south-1';
   return {
     name: file.originalname,
     url:  `https://${bucket}.s3.${region}.amazonaws.com/${s3Key}`,

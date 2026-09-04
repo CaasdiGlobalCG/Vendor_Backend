@@ -1,0 +1,74 @@
+Vendor_Backend
+
+├── auth
+├── config
+├── controllers
+├── k8s
+├── middleware
+├── models
+├── modules
+│   ├── ai
+│   │   ├── config
+│   │   ├── controllers
+│   │   ├── routes
+│   │   ├── scripts
+│   │   ├── services
+│   │   ├── tools
+│   ├── b2b
+│   │   ├── controllers
+│   │   ├── routes
+│   ├── dashboard
+│   │   ├── controllers
+│   ├── logging
+│   │   ├── config
+│   │   ├── controllers
+│   │   ├── middleware
+│   │   ├── routes
+│   │   ├── scripts
+│   │   ├── services
+│   │   ├── utils
+│   ├── pm
+│   │   ├── controllers
+│   │   ├── models
+│   │   ├── routes
+│   ├── post-services
+│   │   ├── controllers
+│   │   ├── middleware
+│   │   ├── models
+│   │   ├── routes
+│   │   ├── utils
+│   ├── rbac
+│   │   ├── config
+│   │   ├── controllers
+│   │   ├── middleware
+│   │   ├── routes
+│   │   ├── scripts
+│   │   ├── services
+│   │   ├── tests
+│   │   ├── utils
+│   ├── support
+│   │   ├── controllers
+│   │   ├── routes
+│   ├── vendor
+│   │   ├── controllers
+│   │   ├── models
+│   │   ├── routes
+│   │   ├── services
+│   ├── workflow
+│   │   ├── controllers
+│   │   ├── models
+│   │   ├── routes
+│   │   ├── services
+│   ├── workspace
+│   │   ├── controllers
+│   │   ├── models
+│   │   ├── routes
+│   │   ├── services
+├── routes
+├── scripts
+├── services
+├── test
+├── tests
+├── tree_outputs
+├── utils
+├── websocket

@@ -10,7 +10,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 
-const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+const AWS_REGION = process.env.AWS_REGION || 'ap-south-1';
 const sesClient = new SESClient({ region: process.env.SES_REGION || AWS_REGION });
 
 // Verified SES sender — must be a verified identity in AWS SES

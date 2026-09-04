@@ -18,7 +18,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '..', '.env') });
 
 const TABLE_NAME = process.env.SECURITY_LOG_TABLE || 'security_log';
-const REGION = process.env.AWS_REGION || 'us-east-1';
+const REGION = process.env.AWS_REGION || 'ap-south-1';
 
 const client = new DynamoDBClient({ region: REGION });
 

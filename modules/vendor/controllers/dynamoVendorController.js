@@ -188,7 +188,32 @@ export const submitVendorForm = async (req, res) => {
       // If no file was uploaded but we have a URL, keep the existing URL
       console.log("Using existing additionalDocument URL:", formData.additionalDetails.additionalDocument.url);
     }
-    
+
+    const complianceFileFields = [
+      { key: 'factoryLicence', folder: 'factory-licences' },
+      { key: 'pcbConsent', folder: 'pcb-consents' },
+      { key: 'esicEpfCompliance', folder: 'esic-epf-compliance' },
+      { key: 'fireSafetyNoc', folder: 'fire-safety-noc' },
+      { key: 'statutoryCompliance', folder: 'statutory-compliance' },
+      { key: 'professionalIndemnity', folder: 'professional-indemnity' },
+      { key: 'cyberLiabilityInsurance', folder: 'cyber-liability-insurance' },
+      { key: 'dataProtectionCompliance', folder: 'data-protection-compliance' },
+    ];
+    for (const { key, folder } of complianceFileFields) {
+      if (req.files?.[key]) {
+        try {
+          const file = req.files[key][0];
+          const s3Url = await uploadFileToS3(file.buffer, file.originalname, file.mimetype, folder);
+          formData.complianceCertifications[key] = { url: s3Url, originalName: file.originalname, contentType: file.mimetype };
+          console.log(`Successfully uploaded ${key} to S3:`, s3Url);
+        } catch (error) {
+          console.error(`Error uploading ${key} to S3:`, error);
+        }
+      } else if (formData.complianceCertifications[key]?.url) {
+        console.log(`Using existing ${key} URL:`, formData.complianceCertifications[key].url);
+      }
+    }
+
     // Final check of URLs after processing
     console.log("Form data after file processing:", {
       uploadDocumentUrl: formData.complianceCertifications.uploadDocument?.url || "Not present",
