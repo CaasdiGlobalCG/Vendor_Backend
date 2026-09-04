@@ -430,19 +430,20 @@ router.post("/set-role", async (req, res) => {
       ownerUserId = userId; // capture for RBAC provisioning after auth block
       const email = decoded.email;
       console.log("Attempting to update role for Cognito user ID:", userId);
-      // Prefer users by email
-      user = email ? await DynamoGoogleUser.getGoogleUserByEmail(email) : null;
+      // Cognito users belong in the canonical users table. Do not create a
+      // google_users record here: Cognito tokens do not provide a googleId.
+      user = email ? await DynamoUser.getUserByEmail(email) : null;
       if (!user && userId) {
-        user = await DynamoGoogleUser.createGoogleUser({
+        user = await DynamoUser.createUser({
           cognitoId: userId,
           email: email || "",
           displayName: decoded.name || (email ? email.split('@')[0] : ""),
-          role: role,
+          lastSelectedRole: role,
           status: 'pending',
           hasFilledForm: false,
           roleSelected: true
         });
-        console.log("Created new Dynamo Google user with Cognito ID:", userId);
+        console.log("Created canonical Cognito user with ID:", userId);
       }
     } else {
       console.log("No authenticated user in session or token");

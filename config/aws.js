@@ -15,11 +15,18 @@ console.log('Region:', process.env.AWS_REGION || 'ap-south-1');
 console.log('Access Key ID:', process.env.AWS_ACCESS_KEY_ID ? 'Set (hidden)' : 'Not set');
 console.log('Secret Access Key:', process.env.AWS_SECRET_ACCESS_KEY ? 'Set (hidden)' : 'Not set');
 
-// Configure AWS SDK
-AWS.config.update({
+// Configure AWS SDK. Set credentials explicitly because SDK v2 can otherwise
+// resolve a different shared-profile credential before dotenv is loaded.
+const awsConfig = {
   region: process.env.AWS_REGION || 'ap-south-1',
-  
-});
+};
+if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+  awsConfig.credentials = {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  };
+}
+AWS.config.update(awsConfig);
 
 // Create DynamoDB client
 const dynamoDB = new AWS.DynamoDB.DocumentClient();
