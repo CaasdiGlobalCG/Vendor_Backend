@@ -730,7 +730,11 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
       console.warn('[handoff/vendor-exchange] failed to log LOGIN_SUCCESS:', logErr?.message);
     }
 
-    return res.json({ success: true });
+    return res.json({
+      success: true,
+      vendorRegistered: Boolean(entry.vendorId),
+      email: entry.email || null,
+    });
   } catch (e) {
     console.error('[handoff/vendor-exchange] error:', e?.message);
     return res.status(500).json({ error: 'Server error' });
