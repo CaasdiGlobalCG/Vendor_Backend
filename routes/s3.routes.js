@@ -22,7 +22,7 @@ router.get('/generate-upload-url', async (req, res) => {
       return res.status(400).json({ error: 'Filename is required' });
     }
 
-    const bucketName = process.env.QUOTES_S3_BUCKET_NAME || 'workspace-quotes-and-invoices'; // ✅ use hyphen
+    const bucketName = process.env.QUOTES_S3_BUCKET_NAME || 'workspace-quotes-and-invoices-025775692918'; // ✅ use hyphen
 
     const key = `quotes/${filename}`;
 

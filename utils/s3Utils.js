@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
  * @param {string} folder - Optional folder path within the bucket
  * @returns {Promise<string>} - The S3 URL of the uploaded file
  */
-export const uploadFileToS3 = async (fileBuffer, fileName, contentType, folder = '',bucketName = 'workspace-quotes-and-invoices') => {
+export const uploadFileToS3 = async (fileBuffer, fileName, contentType, folder = '',bucketName = 'workspace-quotes-and-invoices-025775692918') => {
   console.log('S3 upload started:', {
     fileName,
     contentType,
@@ -76,7 +76,7 @@ export const deleteFileFromS3 = async (fileUrl) => {
     
     // Set up the S3 delete parameters
     const params = {
-      Bucket: bucketName,
+      Bucket: 'workspace-quotes-and-invoices-025775692918',
       Key: key
     };
     

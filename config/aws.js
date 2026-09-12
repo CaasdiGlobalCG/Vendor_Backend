@@ -35,9 +35,9 @@ const dynamoDB = new AWS.DynamoDB.DocumentClient();
 const s3 = new AWS.S3();
 
 // S3 bucket names
-const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME || 'mac-vendor-uploads';
-const MESSAGE_UPLOADS_BUCKET = 'uploads-in-messages';
-const WORKSPACE_UPLOADS_BUCKET = 'workspace-table';
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME || 'mac-vendor-uploads-025775692918';
+const MESSAGE_UPLOADS_BUCKET = 'uploads-in-messages-025775692918';
+const WORKSPACE_UPLOADS_BUCKET = 'workspace-table-025775692918';
 
 // Table names
 const VENDORS_TABLE = 'vendors';

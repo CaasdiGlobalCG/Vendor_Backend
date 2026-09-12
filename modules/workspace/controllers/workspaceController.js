@@ -3327,7 +3327,7 @@ const savePmPOFile = async (req, res) => {
     let pmPoUrl;
     try {
       pmPoUrl = await uploadFileToS3({
-        bucket: process.env.S3_BUCKET || 'workspace-documents',
+        bucket: process.env.S3_BUCKET || 'workspace-documents-025775692918',
         key: s3Key,
         body: pdfBuffer,
         contentType: 'application/pdf',

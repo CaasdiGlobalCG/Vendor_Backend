@@ -43,7 +43,7 @@ export const uploadAsset = async (req, res) => {
 
     // Upload to S3
     const s3Params = {
-      Bucket: process.env.S3_BUCKET_NAME || 'assets-crm-uploads',
+      Bucket: process.env.S3_BUCKET_NAME || 'assets-crm-uploads-025775692918',
       Key: s3Key,
       Body: file.buffer,
       ContentType: file.mimetype,
@@ -134,7 +134,7 @@ export const deleteAsset = async (req, res) => {
     }
 
     const s3Params = {
-      Bucket: process.env.S3_BUCKET_NAME || 'assets-crm-uploads',
+      Bucket: process.env.S3_BUCKET_NAME || 'assets-crm-uploads-025775692918',
       Key: s3Key,
     };
 
