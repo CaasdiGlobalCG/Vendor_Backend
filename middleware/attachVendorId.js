@@ -117,11 +117,22 @@ export async function attachVendorId(req, res, next) {
       );
 
       if (activeMembership?.orgId) {
-        req.vendorId = activeMembership.orgId;
-        // For team members, orgId in rbac_members IS already the parentOrgId
+        // rbac_members.orgId is the rbac_organizations PK (a UUID), NOT the
+        // vendors table PK. Resolve the real vendorId via rbac_organizations
+        // so downstream code that queries the vendors table by req.vendorId
+        // actually finds the record.
+        const ORGS_TABLE = process.env.RBAC_ORGANIZATIONS_TABLE || 'rbac_organizations';
+        const orgResult = await docClient.send(new GetCommand({
+          TableName: ORGS_TABLE,
+          Key: { orgId: activeMembership.orgId },
+          ProjectionExpression: 'vendorId, orgType',
+        }));
+
+        const resolvedVendorId = orgResult.Item?.vendorId || activeMembership.orgId;
+        req.vendorId = resolvedVendorId;
         req.parentOrgId = activeMembership.orgId;
         req.isTeamMember = true;
-        console.log(`[attachVendorId] Resolved team member ${email} → orgId ${activeMembership.orgId}`);
+        console.log(`[attachVendorId] Resolved team member ${email} → orgId ${activeMembership.orgId} → vendorId ${resolvedVendorId}`);
       }
     }
 

@@ -674,6 +674,30 @@ router.post("/set-role", async (req, res) => {
                 } catch (stampErr) {
                   console.warn('[set-role:client] Failed to stamp clientOrgId (non-blocking):', stampErr?.message);
                 }
+
+                // Stamp clientId on rbac_organizations so team member lookups
+                // can resolve the real clients table PK (mirrors vendorId
+                // stamping for vendor orgs). Uses parentOrgId as the org PK.
+                if (parentOrgId) {
+                  try {
+                    const { DynamoDBDocumentClient: DocC, UpdateCommand: UpdC } = await import('@aws-sdk/lib-dynamodb');
+                    const { DynamoDBClient: DCc } = await import('@aws-sdk/client-dynamodb');
+                    const _ddbOrg = new DCc({ region: process.env.AWS_REGION || 'ap-south-1' });
+                    const _docOrg = DocC.from(_ddbOrg);
+                    await _docOrg.send(new UpdC({
+                      TableName: process.env.RBAC_ORGANIZATIONS_TABLE || 'rbac_organizations',
+                      Key: { orgId: parentOrgId },
+                      UpdateExpression: 'SET clientId = :cid, updatedAt = :now',
+                      ExpressionAttributeValues: {
+                        ':cid': resolvedClientId,
+                        ':now': new Date().toISOString(),
+                      },
+                    }));
+                    console.log('[set-role] Stamped clientId on rbac_organizations:', parentOrgId, '→', resolvedClientId);
+                  } catch (orgStampErr) {
+                    console.warn('[set-role:client] Failed to stamp clientId on rbac_organizations (non-blocking):', orgStampErr?.message);
+                  }
+                }
               }
             })
             .catch((e) => {

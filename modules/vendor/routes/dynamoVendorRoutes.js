@@ -188,10 +188,21 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
 
           const activeMembership = memberResult.Items?.find(m => m.status === 'active');
           if (activeMembership?.orgId) {
-            // Fetch the org owner's vendor record by orgId (= vendorId PK)
+            // rbac_members.orgId is the rbac_organizations PK (a UUID), NOT the
+            // vendors table PK. Resolve the real vendorId via rbac_organizations
+            // before fetching the vendor record.
+            const ORGS_TABLE = process.env.RBAC_ORGANIZATIONS_TABLE || 'rbac_organizations';
+            const orgResult = await _doc.send(new GCmd({
+              TableName: ORGS_TABLE,
+              Key: { orgId: activeMembership.orgId },
+              ProjectionExpression: 'vendorId',
+            }));
+            const actualVendorId = orgResult.Item?.vendorId || activeMembership.orgId;
+
+            // Fetch the org owner's vendor record by the real vendorId
             const orgVendorResult = await _doc.send(new GCmd({
               TableName: VENDORS_TABLE_NAME,
-              Key: { vendorId: activeMembership.orgId },
+              Key: { vendorId: actualVendorId },
             }));
 
             if (orgVendorResult.Item) {

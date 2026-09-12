@@ -154,6 +154,10 @@ RBAC now protects vendor lead operations in `modules/vendor/routes/vendorLeadRou
 | rbac_audit_log | orgId | timestamp | UserAuditIndex |
 | rbac_subscription_plans | planId | — | — |
 
+### rbac_organizations Metadata Columns
+- `vendorId` — the real `vendors` table PK (e.g. `SAN-260904-000`). Present on vendor orgs. Lets team-member lookups resolve the vendor record without scanning by email.
+- `clientId` — the real `clients` table PK (UUID). Present on client orgs. Mirrors `vendorId` for client team-member lookups. Backfilled via `backfillClientOrgIds.js` and stamped at account creation in the set-role flow (`dynamoAuthRoutes.js`).
+
 ## How to Add a New Module
 1. Add entry to `config/modules.js` → `VENDOR_MODULES`
 2. Add default permissions in `config/roles.js` for each role
@@ -169,10 +173,17 @@ node modules/rbac/scripts/createTables.js       # Create DynamoDB tables
 node modules/rbac/scripts/seedDefaults.js        # Seed plans + roles
 node modules/rbac/scripts/backfillSuperAdmins.js # Migrate existing accounts
 node modules/rbac/scripts/backfillMemberScopes.js # Backfill missing project/workspace scopes
+node modules/rbac/scripts/backfillClientOrgIds.js # Backfill clientId on client rbac_organizations
 ```
 
 ### Scope Backfill Script
 - `backfillMemberScopes.js` fills missing `projectAccess` and `workspaceAccess` with `['*']` for legacy members.
+- Default mode is dry-run.
+- Set `BACKFILL_DRY_RUN=false` to write updates.
+
+### Client Org ID Backfill Script
+- `backfillClientOrgIds.js` stamps `clientId` on `rbac_organizations` for existing client orgs.
+- Scans `users` table for records with `clientOrgId`, matches to `rbac_organizations` via `parentOrgId`.
 - Default mode is dry-run.
 - Set `BACKFILL_DRY_RUN=false` to write updates.
 

@@ -3,9 +3,10 @@
 // PURPOSE: Sends RBAC invitation emails via AWS SES.
 //          Uses SESClient + SendEmailCommand from @aws-sdk/client-ses.
 // CONNECTS TO: membersController.inviteMember, emailTemplates.js
-// NOTE: SES must have the sender address verified. Currently
-//       virtualspace@caasdiglobal.in is verified; noreply@ pending.
-//       In sandbox mode, recipient addresses must also be verified.
+// NOTE: SES sender identities verified: caasdiglobal.in (domain) +
+//       noreply@caasdiglobal.in. Account is in sandbox mode, so
+//       recipients must also be verified unless the account is moved
+//       out of the sandbox (request via AWS console).
 // ============================================================
 
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
