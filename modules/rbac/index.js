@@ -12,6 +12,7 @@ export { default as invitePublicRoutes } from './routes/invitePublicRoutes.js';
 
 // Middleware — exported for use on other module routes
 export { attachRBAC } from './middleware/attachRBAC.js';
+export { attachOrgId } from './middleware/attachOrgId.js';
 export { requirePermission, requireSuperAdmin } from './middleware/requirePermission.js';
 
 // Config — exported so other modules can reference module/role definitions

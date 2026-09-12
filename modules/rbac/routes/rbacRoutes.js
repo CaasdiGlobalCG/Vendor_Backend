@@ -15,21 +15,25 @@ import { listInvitations, cancelInvitation } from '../controllers/invitationsCon
 import { getAuditLogs } from '../controllers/auditLogController.js';
 import { listPermissions, listPlatforms } from '../controllers/permissionsController.js';
 import { attachRBAC } from '../middleware/attachRBAC.js';
+import { attachOrgId } from '../middleware/attachOrgId.js';
 import { requirePermission } from '../middleware/requirePermission.js';
 import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware.js';
-import { attachVendorId } from '../../../middleware/attachVendorId.js';
 
 const router = Router();
 
 // ──────────────────────────────────────
-// Auth → VendorId → RBAC pipeline applied to all RBAC routes.
+// Auth → OrgId → RBAC pipeline applied to all RBAC routes.
 // Invite routes live in invitePublicRoutes.js (no auth) mounted at
 // /api/rbac/invite in server.js — they never reach this router.
-// attachVendorId resolves req.vendorId from email (EmailIndex Query).
-// attachRBAC reads req.vendorId to find org → loads role + permissions.
+//
+// attachOrgId resolves req.parentOrgId + req.orgType from rbac_members
+// (generic — works for vendor AND client users). This is the key change
+// that lets client/sales backends call vendor's /api/rbac/me and get
+// their correct RBAC context with the right module registry.
+// attachRBAC reads req.parentOrgId to find org → loads role + permissions.
 // ──────────────────────────────────────
 router.use(authenticateCognitoJwt);
-router.use(attachVendorId);
+router.use(attachOrgId);
 router.use(attachRBAC);
 
 // ──────────────────────────────────────

@@ -4,6 +4,34 @@
 Role-Based Access Control (RBAC) module for the Vendor Backend.
 RBAC operates in **strict enforcement mode** — users without membership or permissions are denied.
 
+## Modular Monolith Role (rbacdev branch)
+This module is the **single RBAC authority** for all Caasdi backends:
+- **Vendor backend**: uses RBAC in-process (attachRBAC + requirePermission)
+- **Client backend**: calls vendor `/api/rbac/me` at login, embeds permissions in session
+- **Sales backend**: calls vendor `/api/rbac/me` at login, embeds permissions in session
+
+The `attachOrgId` middleware (new in rbacdev) resolves ANY org type (vendor OR client)
+from `rbac_members.UserOrgsIndex`, so client/sales users calling vendor's RBAC API
+get their correct `orgType` and module registry. The old `attachVendorId` only
+resolved vendor orgs — client users got `orgType='vendor'` (wrong) and the wrong
+module list.
+
+### Why modular monolith (not shared package)
+- 1 source code copy, 1 runtime authority (this module)
+- No package versioning discipline needed across 3 backends
+- Sales already wired via `VENDOR_BACKEND_URL`
+- Vendor stays in-process (heaviest RBAC user)
+- Client/sales pay 1 network call at login, then in-process per-request checks via session embedding
+
+### Session embedding pattern (WorkOS-style)
+```
+Client/Sales login → call vendor /api/rbac/me once → embed permissions[] in session
+Subsequent requests → read permissions from session → requirePermission check (in-process, ~0.1ms)
+```
+Permission *checks* stay in-process in client/sales. Permission *management* (invite,
+create role, list members, audit log) calls vendor backend over HTTP — those are
+low-frequency admin UI actions where the network hop is fine.
+
 ## Directory Structure
 ```
 modules/rbac/
@@ -36,13 +64,15 @@ modules/rbac/
 
 ## Middleware Chain
 ```
-authenticateCognitoJwt → attachVendorId → attachRBAC → route handler
+authenticateCognitoJwt → attachOrgId → attachRBAC → route handler
 ```
-- `attachVendorId` (at `middleware/attachVendorId.js`):
-  1. Primary: Queries `vendors.EmailIndex` GSI → sets `req.vendorId`
-  2. Fallback (team members): Queries `rbac_members.UserOrgsIndex` by Cognito sub → finds active vendor membership → sets `req.vendorId = orgId`, `req.isTeamMember = true`
-  3. Note: vendorId hint validation may log "does not match authenticated email" for team members — this is expected and harmless.
-- `attachRBAC`: Reads `req.vendorId` (sync `resolveOrg()`) → GetItem `rbac_members` → GetItem `rbac_roles` → sets `req.rbac`
+- `attachOrgId` (at `modules/rbac/middleware/attachOrgId.js`):
+  1. Queries `rbac_members.UserOrgsIndex` by Cognito sub → finds active membership
+  2. Gets `rbac_organizations` → reads `orgType` + native ID (`vendorId`/`clientId`)
+  3. Sets `req.parentOrgId` (stable RBAC org UUID), `req.orgType`, `req.vendorId`/`req.clientId`
+  4. Generic — works for vendor AND client users (unlike old `attachVendorId`)
+- `attachRBAC`: Reads `req.parentOrgId` (via `resolveOrg()`) → GetItem `rbac_members` → GetItem `rbac_roles` → sets `req.rbac`
+- **Note**: Vendor-specific routes outside RBAC (leads, projects, workspace) still use `attachVendorId` — they need the native vendor ID, not just the RBAC org UUID. RBAC routes use `attachOrgId` because RBAC is org-type agnostic.
 
 ### attachRBAC Known Gotchas (all fixed, documented for future reference)
 1. **Reserved keyword `permissions`**: Must alias as `#perms` in `ProjectionExpression` for `rbac_roles` GetItem. Without alias → `ValidationException`.
