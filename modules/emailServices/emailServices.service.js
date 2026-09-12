@@ -1,25 +1,24 @@
 // ============================================================
-// FILE: emailService.js (Vendor Backend — ESM)
-// PURPOSE: Sends RBAC invitation emails via AWS SES.
-//          Uses SESClient + SendEmailCommand from @aws-sdk/client-ses.
-// CONNECTS TO: membersController.inviteMember, emailTemplates.js
-// NOTE: SES sender identities verified: caasdiglobal.in (domain) +
-//       noreply@caasdiglobal.in. Account is in sandbox mode, so
-//       recipients must also be verified unless the account is moved
-//       out of the sandbox (request via AWS console).
+// FILE: emailServices.service.js
+// PURPOSE: Sends transactional emails via AWS SES. Best-effort —
+//          errors are logged but never thrown, so the calling
+//          mutation (e.g., create invitation) still succeeds.
+// CONNECTS TO: emailServices.config.js (SES config),
+//              emailTemplates.utils.js (HTML builders),
+//              modules/rbac/controllers/membersController.js (consumer)
+// NOTE: SES account is in sandbox mode — recipients must be
+//       verified until account is moved out of sandbox
+//       (request via AWS console).
 // ============================================================
 
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { buildInvitationEmail, buildRemovalEmail } from './emailTemplates.js';
+import { SES_REGION, SES_FROM_EMAIL, VENDOR_FRONTEND_URL } from './emailServices.config.js';
+import { buildInvitationEmail, buildRemovalEmail } from './emailTemplates.utils.js';
 
 // ──────────────────────────────────────
-// AWS SES client — uses shared AWS credentials from env vars
-// (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
+// AWS SES client — singleton
 // ──────────────────────────────────────
-const sesClient = new SESClient({ region: process.env.AWS_REGION || 'ap-south-1' });
-
-/** Verified sender address for all RBAC invitation emails */
-const DEFAULT_FROM = process.env.SES_FROM_EMAIL || 'noreply@caasdiglobal.in';
+const sesClient = new SESClient({ region: SES_REGION });
 
 /**
  * Build the invite URL that the recipient will click.
@@ -29,13 +28,7 @@ const DEFAULT_FROM = process.env.SES_FROM_EMAIL || 'noreply@caasdiglobal.in';
  * @returns {string} Full URL, e.g. https://www.caasdiglobal.in/invite/accept?token=abc123
  */
 function buildInviteUrl(inviteToken) {
-  const baseUrl = (
-    process.env.VENDOR_FRONTEND_URL ||
-    process.env.VENDOR_DASH ||
-    'http://localhost:5173'
-  ).replace(/\/+$/, '');
-
-  return `${baseUrl}/invite/accept?token=${encodeURIComponent(inviteToken)}`;
+  return `${VENDOR_FRONTEND_URL}/invite/accept?token=${encodeURIComponent(inviteToken)}`;
 }
 
 /**
@@ -72,7 +65,7 @@ export async function sendInvitationEmail({
     });
 
     const command = new SendEmailCommand({
-      Source: `Caasdi <${DEFAULT_FROM}>`,
+      Source: `Caasdi <${SES_FROM_EMAIL}>`,
       Destination: { ToAddresses: [to] },
       Message: {
         Subject: { Data: `You've been invited to join ${orgName} on Caasdi`, Charset: 'UTF-8' },
@@ -81,11 +74,11 @@ export async function sendInvitationEmail({
     });
 
     const result = await sesClient.send(command);
-    console.log(`[RBAC Email] Invitation sent to ${to} — messageId: ${result.MessageId}`);
+    console.log(`[EmailServices] Invitation sent to ${to} — messageId: ${result.MessageId}`);
     return { success: true, messageId: result.MessageId };
   } catch (error) {
     // Log but don't throw — invitation record already created, email is best-effort
-    console.error(`[RBAC Email] Failed to send invitation to ${to}:`, error.message);
+    console.error(`[EmailServices] Failed to send invitation to ${to}:`, error.message);
     return { success: false, error: error.message };
   }
 }
@@ -106,7 +99,7 @@ export async function sendRemovalEmail({ to, orgName, removedByName, reason, org
     const html = buildRemovalEmail({ orgName, removedByName, reason, orgType });
 
     const command = new SendEmailCommand({
-      Source: `Caasdi <${DEFAULT_FROM}>`,
+      Source: `Caasdi <${SES_FROM_EMAIL}>`,
       Destination: { ToAddresses: [to] },
       Message: {
         Subject: { Data: `Your access to ${orgName} has been revoked`, Charset: 'UTF-8' },
@@ -115,10 +108,10 @@ export async function sendRemovalEmail({ to, orgName, removedByName, reason, org
     });
 
     const result = await sesClient.send(command);
-    console.log(`[RBAC Email] Removal notification sent to ${to} — messageId: ${result.MessageId}`);
+    console.log(`[EmailServices] Removal notification sent to ${to} — messageId: ${result.MessageId}`);
     return { success: true, messageId: result.MessageId };
   } catch (error) {
-    console.error(`[RBAC Email] Failed to send removal notification to ${to}:`, error.message);
+    console.error(`[EmailServices] Failed to send removal notification to ${to}:`, error.message);
     return { success: false, error: error.message };
   }
 }

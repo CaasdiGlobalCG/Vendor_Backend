@@ -242,3 +242,7 @@ node modules/rbac/scripts/backfillClientOrgIds.js # Backfill clientId on client 
 - **Team Member Login Flow** (done): Shared-org model, middleware fallbacks, frontend routing
 - **Phase 3**: Audit logging, custom roles (planned)
 - **Phase 4** (done): Full enforcement (permissive fallbacks removed)
+
+## Email Services — Separated
+
+Email sending (invitation + removal notifications) moved to modules/emailServices module. RBAC membersController imports sendInvitationEmail + sendRemovalEmail from ../emailServices/index.js. See modules/emailServices/emailServices-context.md for details.

@@ -12,7 +12,7 @@ import { TABLES } from '../config/tables.js';
 import { canManageUser } from '../utils/permission.utils.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
 import { derivePlatformAccess } from '../config/modules.js';
-import { sendInvitationEmail, sendRemovalEmail } from '../services/emailService.js';
+import { sendInvitationEmail, sendRemovalEmail } from '../../emailServices/index.js';
 import { bumpOrgPermissionVersion } from '../utils/versionStamp.utils.js';
 import { sanitizeScopeIds, resolveAccessScopesForRole } from '../utils/scopeAccess.utils.js';
 import crypto from 'crypto';
