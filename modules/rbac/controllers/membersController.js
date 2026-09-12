@@ -13,6 +13,7 @@ import { canManageUser } from '../utils/permission.utils.js';
 import { VENDOR_DEFAULT_ROLES, CLIENT_DEFAULT_ROLES } from '../config/roles.js';
 import { derivePlatformAccess } from '../config/modules.js';
 import { sendInvitationEmail, sendRemovalEmail } from '../services/emailService.js';
+import { bumpOrgPermissionVersion } from '../utils/versionStamp.utils.js';
 import { sanitizeScopeIds, resolveAccessScopesForRole } from '../utils/scopeAccess.utils.js';
 import crypto from 'crypto';
 
@@ -403,6 +404,9 @@ export async function changeMemberRole(req, res) {
       newRoleId,
     }, req.auth?.email);
 
+    // ── Bump org permission version so client/sales sessions re-fetch RBAC ──
+    await bumpOrgPermissionVersion(orgId);
+
     return res.status(200).json({
       member: {
         userId: targetUserId,
@@ -492,6 +496,9 @@ export async function removeMember(req, res) {
       previousRole: targetMember.roleId,
       reason: trimmedReason,
     }, req.auth?.email);
+
+    // ── Bump org permission version so client/sales sessions re-fetch RBAC ──
+    await bumpOrgPermissionVersion(orgId);
 
     // ── Send removal notification email (best-effort) ──
     let orgName = orgId;
@@ -599,6 +606,8 @@ export async function suspendMember(req, res) {
       suspendedUntil: normalizedSuspendedUntil,
     }, req.auth?.email);
 
+    await bumpOrgPermissionVersion(orgId);
+
     return res.status(200).json({
       success: true,
       message: `${targetMember.email} has been suspended`,
@@ -675,6 +684,8 @@ export async function unsuspendMember(req, res) {
       targetEmail: targetMember.email,
       reason: unsuspendReason,
     }, req.auth?.email);
+
+    await bumpOrgPermissionVersion(orgId);
 
     return res.status(200).json({
       success: true,
@@ -758,6 +769,8 @@ export async function updateMemberAccessScopes(req, res) {
       projectAccess: projectIds,
       workspaceAccess: workspaceIds,
     }, req.auth?.email);
+
+    await bumpOrgPermissionVersion(orgId);
 
     return res.status(200).json({
       success: true,

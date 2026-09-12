@@ -11,6 +11,31 @@
 import { VENDOR_MODULES, CLIENT_MODULES, getModuleKeys } from '../config/modules.js';
 import { ROLE_LEVELS } from '../config/roles.js';
 import { buildPermissionMap, getAccessibleModules } from '../utils/permission.utils.js';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { docClient } from '../config/db.js';
+import { TABLES } from '../config/tables.js';
+
+/**
+ * Fetch the org's current permission version stamp.
+ * Used by client/sales backends to detect stale cached RBAC in sessions.
+ * Returns 0 if missing (treated as "always fresh" — backward compat).
+ *
+ * @param {string} orgId - RBAC organization ID
+ * @returns {Promise<number>}
+ */
+async function getOrgPermissionVersion(orgId) {
+  try {
+    const { Item } = await docClient.send(new GetCommand({
+      TableName: TABLES.ORGANIZATIONS,
+      Key: { orgId },
+      ProjectionExpression: 'orgPermissionVersion',
+    }));
+    return Item?.orgPermissionVersion ?? 0;
+  } catch (err) {
+    console.warn('[meController] getOrgPermissionVersion failed:', err?.message);
+    return 0;
+  }
+}
 
 /**
  * GET /api/rbac/me
@@ -47,11 +72,18 @@ export async function getMyRBAC(req, res) {
     // Get list of modules the user can access (has at least one permission)
     const accessibleModules = getAccessibleModules(rbac.permissionSet);
 
+    // Fetch org permission version stamp for client/sales session invalidation.
+    // WHY: client/sales cache RBAC in session at login. When admin changes roles/
+    //      permissions, version bumps. On next /me call (or session check), client/
+    //      sales compare stored version vs current → re-fetch if mismatch.
+    const orgPermissionVersion = await getOrgPermissionVersion(rbac.orgId);
+
     return res.status(200).json({
       hasRBAC: true,
       userId: rbac.userId,
       orgId: rbac.orgId,
       orgType: rbac.orgType,
+      orgPermissionVersion,
       role: {
         roleId: rbac.roleId,
         roleName: rbac.roleName,

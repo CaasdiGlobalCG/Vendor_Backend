@@ -15,6 +15,7 @@ import {
 import { docClient } from '../config/db.js';
 import { TABLES, EXISTING_TABLES } from '../config/tables.js';
 import crypto from 'crypto';
+import { bumpOrgPermissionVersion } from '../utils/versionStamp.utils.js';
 
 const cognitoClient = new CognitoIdentityProviderClient({
   region: process.env.AWS_REGION || 'ap-south-1',
@@ -289,6 +290,10 @@ export async function acceptInvitation(req, res) {
       roleId,
       displayName: displayName.trim(),
     }, email);
+
+    // ── Bump org permission version so existing sessions re-fetch RBAC ──
+    // New member joining changes seat count + may affect role distribution.
+    await bumpOrgPermissionVersion(orgId);
 
     console.log(`[RBAC] Invitation accepted — ${email} joined ${orgId} as ${roleName}`);
 

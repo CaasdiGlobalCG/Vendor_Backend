@@ -15,6 +15,7 @@ import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { VENDOR_MODULES, CLIENT_MODULES, getAllPermissions } from '../config/modules.js';
 import { canManageUser } from '../utils/permission.utils.js';
+import { bumpOrgPermissionVersion } from '../utils/versionStamp.utils.js';
 
 /* ── helpers ────────────────────────────────────────────── */
 
@@ -316,6 +317,8 @@ export async function createRole(req, res) {
       permissionCount: valid.length, copiedFrom: copyFrom || null,
     }, req.auth?.email);
 
+    await bumpOrgPermissionVersion(orgId);
+
     return res.status(201).json({ role: roleItem });
   } catch (error) {
     console.error('[RBAC] createRole error:', error);
@@ -428,6 +431,8 @@ export async function updateRole(req, res) {
       newPermissionCount: permissions?.length ?? null,
     }, req.auth?.email);
 
+    await bumpOrgPermissionVersion(orgId);
+
     return res.status(200).json({ message: 'Role updated successfully', roleId });
   } catch (error) {
     console.error('[RBAC] updateRole error:', error);
@@ -489,6 +494,8 @@ export async function deleteRole(req, res) {
     logAudit(orgId, userId, 'role.deleted', {
       roleId, roleName: existingRole.roleName,
     }, req.auth?.email);
+
+    await bumpOrgPermissionVersion(orgId);
 
     return res.status(200).json({ message: 'Role deleted successfully', roleId });
   } catch (error) {
