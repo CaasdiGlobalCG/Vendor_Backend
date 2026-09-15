@@ -718,7 +718,7 @@ router.post("/set-role", async (req, res) => {
 
 // Verify authentication
 router.get("/verify", async (req, res) => {
-  const buildUserVerifyPayload = async ({ email, displayNameFallback, roleFallback }) => {
+  const buildUserVerifyPayload = async ({ email, displayNameFallback, roleFallback, idToken }) => {
     if (!email) {
       return {
         email: null,
@@ -776,7 +776,10 @@ router.get("/verify", async (req, res) => {
 
         return {
           isMember: true,
-          memberOrgType: memberOrgType || 'vendor',
+          // Keep null when the org type can't be resolved — /me can't resolve a
+          // vendor for such orgs either, so treating them as unknown lets the
+          // client-backend fallback below rescue the login.
+          memberOrgType: memberOrgType || null,
           platformAccess: Array.isArray(activeMember.platformAccess) ? activeMember.platformAccess : null,
         };
       } catch (e) {
@@ -913,9 +916,35 @@ router.get("/verify", async (req, res) => {
       }
     }
 
-    const lastSelectedRole = userRecord?.lastSelectedRole || null;
-    const roleSelected = userRecord?.roleSelected === true;
-    const role = (lastSelectedRole || roleFallback || 'vendor');
+    // Cross-platform fallback: a Cognito user with no vendor record may be a
+    // registered client (the clients table lives in the client backend) — either
+    // directly, or as owner/member of a client RBAC org. Detect it here so
+    // re-login routes them back to the client portal instead of dead-ending
+    // on /me 404. Confirmed vendor-org members skip the check.
+    let clientDetected = false;
+    if (!vendorRecord && membershipContext.memberOrgType === 'client') {
+      clientDetected = true;
+      console.log(`[verify] ${normalizedEmail} belongs to a client org → platform 'client'`);
+    } else if (!vendorRecord && membershipContext.memberOrgType !== 'vendor') {
+      try {
+        const clientBackendBase = process.env.CLIENT_BACKEND_URL || 'http://localhost:5004';
+        const statusRes = await axios.get(`${clientBackendBase}/client-api/clients/status`, {
+          params: { email: normalizedEmail },
+          headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+          timeout: 5000,
+        });
+        clientDetected = statusRes?.data?.exists === true;
+        if (clientDetected) {
+          console.log(`[verify] client profile exists for ${normalizedEmail} → platform 'client'`);
+        }
+      } catch (e) {
+        console.warn('[verify] client-backend status check failed (non-blocking):', e?.message);
+      }
+    }
+
+    const lastSelectedRole = clientDetected ? 'client' : (userRecord?.lastSelectedRole || null);
+    const roleSelected = clientDetected ? true : (userRecord?.roleSelected === true);
+    const role = clientDetected ? 'client' : (lastSelectedRole || roleFallback || 'vendor');
     const isTeamMember = userRecord?.isTeamMember === true;
 
     // Resolve platformAccess from rbac_members (for team members + org owners)
@@ -928,6 +957,9 @@ router.get("/verify", async (req, res) => {
     // Default: org owners without rbac_members record get all platforms
     if (!platformAccess) {
       platformAccess = ['vendor', 'client', 'sales'];
+    }
+    if (clientDetected && !platformAccess.includes('client')) {
+      platformAccess = [...platformAccess, 'client'];
     }
 
     return {
@@ -948,7 +980,8 @@ router.get("/verify", async (req, res) => {
     const payload = await buildUserVerifyPayload({
       email,
       displayNameFallback: req.user.displayName,
-      roleFallback: req.user.role
+      roleFallback: req.user.role,
+      idToken: req.headers.authorization?.split(' ')[1] || null
     });
     if (payload?.accessDenied?.code) {
       return res.status(403).json({
@@ -981,7 +1014,8 @@ router.get("/verify", async (req, res) => {
       const payload = await buildUserVerifyPayload({
         email,
         displayNameFallback: decoded?.name,
-        roleFallback: 'vendor'
+        roleFallback: 'vendor',
+        idToken: token
       });
       if (payload?.accessDenied?.code) {
         return res.status(403).json({
