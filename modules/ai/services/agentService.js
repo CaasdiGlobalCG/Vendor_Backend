@@ -1,13 +1,15 @@
 // ============================================================
 // FILE: modules/ai/services/agentService.js
-// PURPOSE: LangChain ReAct agent wired to Ollama (local LLM)
+// PURPOSE: LangChain ReAct agent wired to a hosted LLM
+//          (AWS Bedrock or Groq — see aiConfig.provider).
 //          with DynamoDB tools and conversation memory.
 //
 // Uses @langchain/langgraph prebuilt createReactAgent which
 // returns a compiled LangGraph (no legacy AgentExecutor).
 // ============================================================
 
-import { ChatOllama } from '@langchain/ollama';
+import { ChatGroq } from '@langchain/groq';
+import { ChatBedrockConverse } from '@langchain/aws';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import {
   HumanMessage,
@@ -58,6 +60,34 @@ import {
 const agentCache = new Map();
 
 /**
+ * Create the chat model for the configured provider.
+ * @param {'agent'|'personal'|'aux'} purpose - 'agent' needs tool calling;
+ *   'personal' is the no-tools personal space; 'aux' is titles/summaries.
+ */
+function createLLM(purpose, { temperature, maxTokens } = {}) {
+  if (aiConfig.provider === 'bedrock') {
+    return new ChatBedrockConverse({
+      model: aiConfig.bedrock.model,
+      region: aiConfig.bedrock.region,
+      temperature,
+      maxTokens,
+      maxRetries: aiConfig.bedrock.maxRetries,
+    });
+  }
+  const model = purpose === 'personal'
+    ? aiConfig.groq.personalModel
+    : purpose === 'aux' ? aiConfig.groq.auxModel : aiConfig.groq.chatModel;
+  return new ChatGroq({
+    apiKey: aiConfig.groq.apiKey,
+    model,
+    temperature,
+    maxTokens,
+    maxRetries: aiConfig.groq.maxRetries,
+    timeout: aiConfig.groq.requestTimeout,
+  });
+}
+
+/**
  * Build all tools scoped to a specific vendorId.
  * In 'personal' space, no CaaS tools are provided.
  */
@@ -95,11 +125,9 @@ async function getAgent(vendorId, space = 'project') {
     return agentCache.get(cacheKey);
   }
 
-  const llm = new ChatOllama({
-    baseUrl: aiConfig.ollama.baseUrl,
-    model: aiConfig.ollama.chatModel,
-    temperature: space === 'personal' ? 0.6 : aiConfig.ollama.temperature,
-    numCtx: aiConfig.ollama.numCtx,
+  const llm = createLLM(space === 'personal' ? 'personal' : 'agent', {
+    temperature: space === 'personal' ? aiConfig.personalTemperature : aiConfig.temperature,
+    maxTokens: aiConfig.maxTokens,
   });
 
   const tools = buildToolsForVendor(vendorId, space);
@@ -138,13 +166,19 @@ async function getAgent(vendorId, space = 'project') {
   // For project space: full ReAct agent with CaaS tools
   let agent;
   if (tools.length === 0) {
-    // Wrap LLM as a simple callable that matches agent.invoke() shape
+    // Wrap LLM as a simple callable that matches agent.invoke()/agent.stream() shape
     const sysMsg = new SystemMessage(systemPrompt);
     agent = {
       invoke: async ({ messages }, opts) => {
         const fullMessages = [sysMsg, ...messages];
         const result = await llm.invoke(fullMessages);
         return { messages: [...messages, result] };
+      },
+      // Mimics LangGraph streamMode: 'updates' — yields { node: { messages } }
+      stream: async function* ({ messages }) {
+        const fullMessages = [sysMsg, ...messages];
+        const result = await llm.invoke(fullMessages);
+        yield { agent: { messages: [result] } };
       },
     };
   } else {
@@ -196,6 +230,13 @@ function buildFeedbackContext(feedbackItems) {
 
   context += `Summary: ${positive.length} positive and ${negative.length} negative ratings received. Adjust your response style accordingly.`;
   return context;
+}
+
+/**
+ * Strip model reasoning blocks (e.g. Nova's <thinking>…</thinking>) from responses.
+ */
+function stripThinking(text) {
+  return typeof text === 'string' ? text.replace(/<thinking>[\s\S]*?<\/thinking>/g, '').trim() : text;
 }
 
 /**
@@ -404,13 +445,14 @@ export async function chat(vendorId, conversationId, userMessage, vendorEmail, s
   // Collect tool call info for transparency
   let actions = []; // Collect __action markers from tool results
   for (const msg of resultMessages) {
-    if (msg.additional_kwargs?.tool_calls) {
-      for (const tc of msg.additional_kwargs.tool_calls) {
-        intermediateSteps.push({
-          tool: tc.function?.name,
-          input: tc.function?.arguments,
-        });
-      }
+    const tcs = msg.additional_kwargs?.tool_calls?.length
+      ? msg.additional_kwargs.tool_calls
+      : (msg.tool_calls || []);
+    for (const tc of tcs) {
+      intermediateSteps.push({
+        tool: tc.function?.name || tc.name,
+        input: tc.function?.arguments || tc.args,
+      });
     }
     // Extract __action from ToolMessage content (tool results)
     if (msg._getType?.() === 'tool' && typeof msg.content === 'string') {
@@ -430,7 +472,7 @@ export async function chat(vendorId, conversationId, userMessage, vendorEmail, s
   for (let i = resultMessages.length - 1; i >= 0; i--) {
     const msg = resultMessages[i];
     if (msg._getType?.() === 'ai' && typeof msg.content === 'string' && msg.content.trim()) {
-      aiResponse = msg.content;
+      aiResponse = stripThinking(msg.content);
       break;
     }
   }
@@ -601,14 +643,18 @@ export async function chatStream(vendorId, conversationId, userMessage, vendorEm
           const msgType = msg._getType?.() || msg.constructor?.name || '';
 
           // AI message with tool calls → emit tool_start for each
-          if (msgType === 'ai' && msg.additional_kwargs?.tool_calls?.length > 0) {
-            for (const tc of msg.additional_kwargs.tool_calls) {
-              const toolName = tc.function?.name;
+          // (Bedrock exposes them on msg.tool_calls; OpenAI-style providers on additional_kwargs.tool_calls)
+          const tcs = msg.additional_kwargs?.tool_calls?.length
+            ? msg.additional_kwargs.tool_calls
+            : (msg.tool_calls || []);
+          if (msgType === 'ai' && tcs.length > 0) {
+            for (const tc of tcs) {
+              const toolName = tc.function?.name || tc.name;
               if (toolName) {
                 onEvent({ type: 'tool_start', tool: toolName });
                 intermediateSteps.push({
                   tool: toolName,
-                  input: tc.function?.arguments,
+                  input: tc.function?.arguments || tc.args,
                 });
               }
             }
@@ -631,8 +677,8 @@ export async function chatStream(vendorId, conversationId, userMessage, vendorEm
           }
 
           // Final AI response text (no tool calls — the actual answer)
-          if (msgType === 'ai' && typeof msg.content === 'string' && msg.content.trim() && (!msg.additional_kwargs?.tool_calls || msg.additional_kwargs.tool_calls.length === 0)) {
-            aiResponse = msg.content;
+          if (msgType === 'ai' && typeof msg.content === 'string' && msg.content.trim() && tcs.length === 0) {
+            aiResponse = stripThinking(msg.content);
           }
         }
       }
@@ -850,12 +896,7 @@ async function runPostResponseLearning(vendorId, userMessage, aiResponse) {
  * Runs after the first user message + AI response exchange.
  */
 async function generateSmartTitle(vendorId, userMessage, aiResponse) {
-  const llm = new ChatOllama({
-    baseUrl: aiConfig.ollama.baseUrl,
-    model: aiConfig.ollama.chatModel,
-    temperature: 0.3,
-    numCtx: 1024,
-  });
+  const llm = createLLM('aux', { temperature: 0.3, maxTokens: 64 });
 
   const titlePrompt = `Generate a very short title (max 6 words) for a conversation that starts with this exchange. The title should capture the topic concisely.
 
@@ -893,11 +934,7 @@ async function summariseOlderMessages(vendorId, conversation) {
 
   if (toSummarise.length < 5) return; // not worth summarising
 
-  const llm = new ChatOllama({
-    baseUrl: aiConfig.ollama.baseUrl,
-    model: aiConfig.ollama.chatModel,
-    temperature: 0.2,
-  });
+  const llm = createLLM('aux', { temperature: 0.2, maxTokens: 1024 });
 
   const existingSummary = conversation.summary || '';
   const messageText = toSummarise
@@ -926,22 +963,45 @@ export function clearAgentCache(vendorId) {
 }
 
 /**
- * Check if Ollama is available.
+ * Check if the configured LLM provider is reachable and the model works.
  */
-export async function checkOllamaHealth() {
+export async function checkAIHealth() {
+  if (aiConfig.provider === 'bedrock') {
+    try {
+      const llm = createLLM('agent', { temperature: 0, maxTokens: 8 });
+      await llm.invoke([new HumanMessage('ping')]);
+      return {
+        healthy: true,
+        provider: 'bedrock',
+        hasRequiredModel: true,
+        requiredModel: aiConfig.bedrock.model,
+      };
+    } catch (err) {
+      return {
+        healthy: false,
+        provider: 'bedrock',
+        requiredModel: aiConfig.bedrock.model,
+        error: err.message,
+      };
+    }
+  }
+  if (!aiConfig.groq.apiKey) {
+    return { healthy: false, error: 'GROQ_API_KEY_VENDOR_DASHBOARD_AI is not configured' };
+  }
   try {
-    const response = await fetch(`${aiConfig.ollama.baseUrl}/api/tags`, {
+    const response = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${aiConfig.groq.apiKey}` },
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) return { healthy: false, error: `HTTP ${response.status}` };
     const data = await response.json();
-    const models = (data.models || []).map((m) => m.name);
-    const hasRequiredModel = models.some((m) => m.includes(aiConfig.ollama.chatModel.split(':')[0]));
+    const models = (data.data || []).map((m) => m.id);
+    const hasRequiredModel = models.includes(aiConfig.groq.chatModel);
     return {
       healthy: true,
       models,
       hasRequiredModel,
-      requiredModel: aiConfig.ollama.chatModel,
+      requiredModel: aiConfig.groq.chatModel,
     };
   } catch (err) {
     return { healthy: false, error: err.message };

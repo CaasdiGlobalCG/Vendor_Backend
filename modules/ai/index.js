@@ -1,5 +1,5 @@
 // ============================================================
-// AI Module — Local AI assistant with Ollama + LangChain
+// AI Module — AI assistant with LangChain (AWS Bedrock / Groq)
 // Provides vendor-scoped chat with DynamoDB data tools
 // and DynamoDB-backed conversation memory.
 // ============================================================

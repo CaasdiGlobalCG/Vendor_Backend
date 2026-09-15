@@ -14,10 +14,58 @@
 import jwt from 'jsonwebtoken';
 import jwkToPem from 'jwk-to-pem';
 import fetch from 'node-fetch';
+import { getUserByEmail } from '../models/DynamoUser.js';
+import { getVendorByEmail } from '../modules/vendor/models/DynamoVendor.js';
+import { verifyExternalSessionToken } from '../utils/externalSession.js';
 
 /** JWKS cache: { pems: { [kid]: string }, fetchedAt: number } */
 let jwksCache = null;
 const JWKS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Identity cache: sub -> { identity, expiresAt }.
+ * Cognito tokens from this pool carry no custom:role claim — the application
+ * role is stored in the users table (lastSelectedRole, set on every login by
+ * POST /api/auth/session) and the vendorId (DSB-...) lives in the vendors
+ * table. Cached briefly to avoid a DynamoDB scan on every request.
+ */
+const identityCache = new Map();
+const IDENTITY_CACHE_TTL_MS = 60 * 1000; // 1 minute
+
+async function resolveIdentity(payload) {
+  const cached = identityCache.get(payload.sub);
+  if (cached && cached.expiresAt > Date.now()) return cached.identity;
+
+  let role = payload['custom:role'] || null;
+  let vendorId = null;
+
+  if (!role && payload.email) {
+    try {
+      const dbUser = await getUserByEmail(payload.email);
+      role = dbUser?.lastSelectedRole || dbUser?.role || null;
+    } catch (err) {
+      console.warn('[auth] users-table role lookup failed:', err?.message);
+    }
+  }
+
+  // Vendor records carry the vendorId controllers scope data by. Looked up
+  // when role is vendor, or when role is still unknown (vendor record ⇒ vendor).
+  if (payload.email && (!role || role === 'vendor')) {
+    try {
+      const vendor = await getVendorByEmail(payload.email);
+      if (vendor) {
+        role = 'vendor';
+        vendorId = vendor.vendorId || vendor.id || null;
+      }
+    } catch (err) {
+      console.warn('[auth] vendors-table lookup failed:', err?.message);
+    }
+  }
+
+  const identity = { role, vendorId };
+  identityCache.set(payload.sub, { identity, expiresAt: Date.now() + IDENTITY_CACHE_TTL_MS });
+  return identity;
+}
 
 async function fetchJwks(forceRefresh = false) {
   const now = Date.now();
@@ -63,6 +111,27 @@ export const authenticateUser = async (req, res, next) => {
 
     const kid = decodedHeader.header.kid;
 
+    // External PM/CAS session tokens are vendor-signed HS256 — no JWKS kid.
+    if (!kid) {
+      const external = verifyExternalSessionToken(token);
+      if (!external) {
+        return res.status(401).json({ success: false, message: 'Authentication failed: unknown signing key.' });
+      }
+      req.user = {
+        sub: external.userId,
+        id: external.userId,
+        userId: external.userId,
+        pmId: external.userId,
+        email: external.email,
+        name: external.name,
+        role: external.role,
+        external: true,
+        workspaceIds: external.workspaceIds || [],
+      };
+      req.externalUser = external;
+      return next();
+    }
+
     // Attempt verification; if kid is unknown, refresh JWKS once and retry
     let pems = await fetchJwks();
     if (!pems[kid]) {
@@ -84,11 +153,17 @@ export const authenticateUser = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Authentication failed: invalid token type.' });
     }
 
-    // Set req.user exclusively from the verified payload — no client-supplied fallback
+    // Set req.user exclusively from the verified payload + server-side identity
+    // resolution — no client-supplied fallback. Role/vendorId come from
+    // DynamoDB because this pool's tokens do not carry a custom:role claim.
+    const identity = await resolveIdentity(payload);
     req.user = {
-      sub:   payload.sub,
-      email: payload.email,
-      role:  payload['custom:role'] || null,
+      sub:      payload.sub,
+      id:       payload.sub,
+      userId:   payload.sub,
+      email:    payload.email,
+      role:     identity.role,
+      vendorId: identity.vendorId,
     };
 
     next();

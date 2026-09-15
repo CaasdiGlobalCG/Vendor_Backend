@@ -1,10 +1,13 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import { GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand, UpdateCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { getPem } from '../utils/jwksUtils.js';
 import { createSession, getTokenForSession } from '../utils/sessionStore.js';
+import { signExternalSessionToken } from '../utils/externalSession.js';
 import * as DynamoUser from '../models/DynamoUser.js';
 import * as DynamoVendor from '../modules/vendor/models/DynamoVendor.js';
+import * as DynamoWorkspace from '../modules/workspace/models/DynamoWorkspace.js';
+import { WORKSPACES_TABLE } from '../config/aws.js';
 import { docClient } from '../modules/rbac/config/db.js';
 import { TABLES } from '../modules/rbac/config/tables.js';
 import { derivePlatformAccess } from '../modules/rbac/config/modules.js';
@@ -737,6 +740,177 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
     });
   } catch (e) {
     console.error('[handoff/vendor-exchange] error:', e?.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────
+// External (PM / CAS) workspace handoff
+// The Employee backend writes a one-time code to the shared
+// `external_handoff_codes` table; this endpoint consumes it and
+// establishes a vg_auth cookie session scoped to the workspaces
+// the user owns (PM) or collaborates on (CAS).
+// ────────────────────────────────────────────────────────────
+const EXTERNAL_HANDOFF_TABLE = process.env.EXTERNAL_HANDOFF_TABLE || 'external_handoff_codes';
+
+/**
+ * Scan workspaces_table for every workspace this external user can access:
+ * owner (accessControl.owner / vendorId compat field) or collaborator
+ * (accessControl.collaborators / sharedWith / casCollaborators).
+ */
+async function scanExternalWorkspaceScope(userId) {
+  const workspaceIds = new Set();
+  const projectIds = new Set();
+  let lastKey;
+
+  do {
+    const out = await docClient.send(new ScanCommand({
+      TableName: WORKSPACES_TABLE,
+      ProjectionExpression: 'workspaceId, id, projectId, accessControl, sharedWith, casCollaborators, vendorId',
+      ExclusiveStartKey: lastKey,
+    }));
+
+    for (const ws of out.Items || []) {
+      const isOwner = ws.accessControl?.owner === userId || ws.vendorId === userId;
+      const isCollaborator =
+        (ws.accessControl?.collaborators || []).includes(userId) ||
+        (ws.sharedWith || []).includes(userId) ||
+        (ws.casCollaborators || []).some((c) => c?.userId === userId);
+      if (!isOwner && !isCollaborator) continue;
+
+      const wsId = ws.workspaceId || ws.id;
+      if (wsId) workspaceIds.add(wsId);
+      if (ws.projectId) projectIds.add(ws.projectId);
+    }
+
+    lastKey = out.LastEvaluatedKey;
+  } while (lastKey);
+
+  return { workspaceIds: [...workspaceIds], projectIds: [...projectIds] };
+}
+
+// GET /api/auth/handoff/external-exchange?code=...
+// Consumes a one-time code (created by the Employee backend) and returns a
+// vendor-signed external session token + sets the vg_auth httpOnly cookie.
+router.get('/handoff/external-exchange', async (req, res) => {
+  try {
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: 'Missing code' });
+
+    // Atomically consume the code — single use, must exist and be unexpired.
+    let entry;
+    try {
+      const consumed = await docClient.send(new UpdateCommand({
+        TableName: EXTERNAL_HANDOFF_TABLE,
+        Key: { code: String(code) },
+        UpdateExpression: 'SET #used = :true',
+        ConditionExpression: 'attribute_exists(code) AND (attribute_not_exists(#used) OR #used = :false) AND expiresAt > :now',
+        ExpressionAttributeNames: { '#used': 'used' },
+        ExpressionAttributeValues: { ':true': true, ':false': false, ':now': Date.now() },
+        ReturnValues: 'ALL_NEW',
+      }));
+      entry = consumed.Attributes;
+    } catch (err) {
+      if (err.name === 'ConditionalCheckFailedException') {
+        return res.status(404).json({ error: 'Invalid or expired code' });
+      }
+      throw err;
+    }
+
+    const { userId, email, name, workspaceId } = entry || {};
+    if (!userId || !workspaceId) {
+      return res.status(400).json({ error: 'Malformed handoff code' });
+    }
+
+    const workspace = await DynamoWorkspace.getWorkspaceById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    // Derive role from the workspace ACL — never trust a client-supplied role.
+    const owner = workspace.accessControl?.owner || workspace.vendorId;
+    const collaboratorIds = [
+      ...(workspace.accessControl?.collaborators || []),
+      ...(workspace.sharedWith || []),
+      ...(workspace.casCollaborators || []).map((c) => c?.userId),
+    ].filter(Boolean);
+
+    let role = null;
+    if (owner === userId) role = 'pm';
+    else if (collaboratorIds.includes(userId)) role = 'cas';
+
+    if (!role) {
+      console.warn(`[handoff/external-exchange] ${userId} denied workspace ${workspaceId} — not owner or collaborator`);
+      return res.status(403).json({ error: 'You do not have access to this workspace' });
+    }
+
+    // Scope the session to every workspace this user owns/collaborates on.
+    const scope = await scanExternalWorkspaceScope(userId);
+    const wsKey = workspace.workspaceId || workspace.id || workspaceId;
+    if (wsKey && !scope.workspaceIds.includes(wsKey)) scope.workspaceIds.push(wsKey);
+    if (workspace.projectId && !scope.projectIds.includes(workspace.projectId)) scope.projectIds.push(workspace.projectId);
+
+    const token = signExternalSessionToken({
+      role,
+      userId,
+      email,
+      name,
+      workspaceIds: scope.workspaceIds,
+      projectIds: scope.projectIds,
+    });
+    const sid = await createSession(token);
+
+    // Same cookie policy as /handoff/vendor-exchange
+    const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
+    const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
+    let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';
+    let secure = sameSite === 'None';
+
+    const host = String(req.hostname || '').toLowerCase();
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    if (isLocalhost && sameSite === 'None') {
+      sameSite = 'Lax';
+      secure = false;
+    }
+
+    const configuredDomain = process.env.VENDOR_AUTH_COOKIE_DOMAIN || '';
+    const reqHost = String(req.hostname || '');
+    let cookieDomain;
+    if (configuredDomain) {
+      const normalized = configuredDomain.startsWith('.') ? configuredDomain.slice(1) : configuredDomain;
+      if (reqHost === normalized || reqHost.endsWith(`.${normalized}`)) cookieDomain = configuredDomain;
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.cookie(cookieName, sid, {
+      httpOnly: true,
+      secure,
+      sameSite,
+      domain: cookieDomain || undefined,
+      path: '/',
+      maxAge: 8 * 60 * 60 * 1000,
+    });
+
+    try {
+      logSecurityEvent({
+        orgId: 'external',
+        action: SECURITY_ACTIONS.LOGIN_SUCCESS,
+        actorId: userId,
+        actorEmail: email || '',
+        details: { method: 'handoff-external-exchange', role, workspaceId: wsKey },
+        metadata: { ip: req.ip || req.connection?.remoteAddress, userAgent: req.get('user-agent'), requestId: req.requestId },
+      });
+    } catch (logErr) {
+      console.warn('[handoff/external-exchange] failed to log LOGIN_SUCCESS:', logErr?.message);
+    }
+
+    return res.json({
+      success: true,
+      authToken: token,
+      user: { userId, email: email || null, name: name || null, role },
+    });
+  } catch (e) {
+    console.error('[handoff/external-exchange] error:', e?.message);
     return res.status(500).json({ error: 'Server error' });
   }
 });

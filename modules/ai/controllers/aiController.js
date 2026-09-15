@@ -7,7 +7,7 @@
 import {
   chat,
   chatStream,
-  checkOllamaHealth,
+  checkAIHealth,
   clearAgentCache,
 } from '../services/agentService.js';
 import { productClarificationAssistant } from '../services/productAssistantService.js';
@@ -279,11 +279,11 @@ export async function handleFeedback(req, res) {
 
 /**
  * GET /api/ai/health
- * Check if Ollama is running and has required models.
+ * Check if the Groq API is reachable and has the required model.
  */
 export async function handleHealthCheck(req, res) {
   try {
-    const health = await checkOllamaHealth();
+    const health = await checkAIHealth();
     return res.json({ success: true, data: health });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

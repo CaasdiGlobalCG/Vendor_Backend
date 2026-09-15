@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { getPem } from '../utils/jwksUtils.js';
 import { getTokenForSession } from '../utils/sessionStore.js';
+import { verifyExternalSessionToken } from '../utils/externalSession.js';
 import { logSecurityEvent, SECURITY_ACTIONS } from '../modules/logging/services/securityLogger.js';
 const JWT_CLOCK_TOLERANCE_SECONDS = Number(process.env.JWT_CLOCK_TOLERANCE_SECONDS || 120);
 
@@ -64,7 +65,24 @@ export async function authenticateCognitoJwt(req, res, next) {
     }
 
     const kid = decodedToken?.header?.kid;
-    const pem = kid ? getPem(kid) : null;
+
+    // External PM/CAS session tokens are vendor-signed HS256 — no JWKS kid.
+    if (!kid) {
+      const external = verifyExternalSessionToken(token);
+      if (!external) {
+        return res.status(401).json({ success: false, message: 'Invalid token' });
+      }
+      req.auth = {
+        sub: external.userId,
+        email: external.email || null,
+        name: external.name || null,
+        token,
+      };
+      req.externalUser = external;
+      return next();
+    }
+
+    const pem = getPem(kid);
     if (!pem) {
       return res.status(401).json({ success: false, message: 'Invalid key ID' });
     }

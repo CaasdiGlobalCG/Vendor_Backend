@@ -13,6 +13,7 @@ import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
 import { derivePlatformAccess } from '../config/modules.js';
 import { normalizeScopeAccess } from '../utils/scopeAccess.utils.js';
+import { buildExternalRbac } from '../../../utils/externalSession.js';
 
 /**
  * Determines which org ID field to use based on what's already on the request.
@@ -59,6 +60,13 @@ function resolveOrg(req) {
  */
 export async function attachRBAC(req, res, next) {
   try {
+    // External PM/CAS sessions (handoff exchange) carry their scope in the
+    // token — build a scoped synthetic RBAC context instead of org membership.
+    if (req.externalUser) {
+      req.rbac = buildExternalRbac(req.externalUser);
+      return next();
+    }
+
     const org = resolveOrg(req);
     if (!org) {
       // No org context — skip RBAC (some routes don't need it, like public endpoints)

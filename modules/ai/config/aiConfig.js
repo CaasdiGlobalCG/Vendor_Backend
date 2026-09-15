@@ -1,17 +1,34 @@
 // ============================================================
 // FILE: modules/ai/config/aiConfig.js
-// PURPOSE: Configuration for the local AI assistant module.
-//          All settings for Ollama, memory, and tool behaviour.
+// PURPOSE: Configuration for the AI assistant module.
+//          All settings for Groq, memory, and tool behaviour.
 // ============================================================
 
 const aiConfig = {
-  // Ollama connection
-  ollama: {
-    baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
-    chatModel: process.env.OLLAMA_CHAT_MODEL || 'llama3.1:8b',
-    temperature: 0.3,        // Low temp for factual tool-use
-    topP: 0.9,
-    numCtx: 4096,            // Context window tokens
+  // LLM provider: 'bedrock' or 'groq'
+  provider: process.env.AI_PROVIDER || 'bedrock',
+
+  temperature: 0.3,          // Low temp for factual tool-use
+  personalTemperature: 0.6,  // Slightly more creative for personal space
+  maxTokens: 4096,           // Max completion tokens
+
+  // AWS Bedrock (Converse API) — credentials from AWS_* env vars
+  bedrock: {
+    region: process.env.AWS_REGION || 'ap-south-1',
+    // Nova Lite via APAC cross-region inference profile — supports tool calling
+    model: process.env.BEDROCK_CHAT_MODEL || 'apac.amazon.nova-lite-v1:0',
+    maxRetries: 5,
+  },
+
+  // Groq connection (used when provider === 'groq')
+  groq: {
+    apiKey: process.env.GROQ_API_KEY_VENDOR_DASHBOARD_AI,
+    // Project space needs function/tool calling — only gpt-oss/qwen models support it (8K TPM).
+    chatModel: process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-20b',
+    // Personal space + title/summary calls use compound models — no tool calling needed, 70K TPM.
+    personalModel: process.env.GROQ_PERSONAL_MODEL || 'groq/compound',
+    auxModel: process.env.GROQ_AUX_MODEL || 'groq/compound-mini',
+    maxRetries: 5,           // Ride out per-minute TPM windows on 429s
     requestTimeout: 120_000, // 2 min timeout
   },
 

@@ -35,6 +35,7 @@ import {
   handleGetAlerts,
   handleDismissAlert,
 } from '../controllers/proactiveAlertsController.js';
+import { handleBuildCanvas } from '../controllers/canvasBuilderController.js';
 
 const router = Router();
 
@@ -77,5 +78,8 @@ router.get('/mentions/types', ...authChain, handleMentionTypes);
 // Proactive alerts
 router.get('/alerts', ...authChain, handleGetAlerts);
 router.post('/alerts/dismiss', ...authChain, handleDismissAlert);
+
+// AI canvas builder — natural language → node/edge spec
+router.post('/canvas-builder', ...authChain, handleBuildCanvas);
 
 export default router;

@@ -941,11 +941,14 @@ export const uploadVendorQuotation = async (req, res) => {
 
     console.log(`✅ Vendor quotation ${quotationId} created for vendor's BOQ`);
 
-    // Also update the lead to mark vendor quotation as submitted
+    // Also update the lead to mark vendor quotation as submitted and move to PM review
     const leadUpdateParams = {
       TableName: LEAD_INVITATIONS_TABLE,
       Key: { leadId },
-      UpdateExpression: 'SET vendorQuotationResponse = :vendorQuotationResponse, updatedAt = :now',
+      UpdateExpression: 'SET vendorQuotationResponse = :vendorQuotationResponse, #status = :status, vendorResponse = :vendorResponse, updatedAt = :now',
+      ExpressionAttributeNames: {
+        '#status': 'status'
+      },
       ExpressionAttributeValues: {
         ':vendorQuotationResponse': {
           vendorBoqUrl,
@@ -953,6 +956,15 @@ export const uploadVendorQuotation = async (req, res) => {
           quotationFileName: vendorQuotationFileName,
           submittedAt: now,
           quotationId
+        },
+        ':status': 'vendor_accepted',
+        ':vendorResponse': {
+          accepted: true,
+          message: 'Vendor submitted their own BOQ and quotation',
+          quotationPdfUrl: vendorQuotationUrl,
+          vendorBoqUrl,
+          submittedAt: now,
+          viaVendorBoq: true
         },
         ':now': now
       },

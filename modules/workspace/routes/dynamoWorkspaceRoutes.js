@@ -206,4 +206,81 @@ router.post('/workspace/comments/mention', requirePermission('workspace', 'view'
   }
 });
 
+// ── Generic collaborator notifications ──
+// Lets workspace participants notify other members by role (pm / vendor /
+// client) — e.g. approval requests, approval results, deletion requests.
+router.post('/workspaces/:id/notify', requirePermission('workspace', 'view'), async (req, res) => {
+  try {
+    const { roles = ['pm', 'vendor', 'client'], excludeUserId, notification = {} } = req.body;
+    const workspaceId = req.params.id;
+
+    const workspaceModel = await import('../models/DynamoWorkspace.js');
+    const workspace = await workspaceModel.getWorkspaceById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ success: false, message: 'Workspace not found' });
+    }
+
+    const owner = workspace.accessControl?.owner;
+    const clientId = workspace.projectMetadata?.clientId || workspace.clientId || workspace.accessControl?.clientId;
+    const collaborators = workspace.accessControl?.collaborators || [];
+
+    const userIds = new Set();
+    if (roles.includes('pm') && owner) userIds.add(owner);
+    if (roles.includes('client') && clientId) userIds.add(clientId);
+    if (roles.includes('vendor')) {
+      collaborators.forEach((id) => {
+        if (id && id !== clientId && id !== owner) userIds.add(id);
+      });
+    }
+    if (excludeUserId) userIds.delete(excludeUserId);
+
+    const { sendNotificationToUser } = await import('../../../websocket/notificationSocket.js');
+    const { createNotification } = await import('../../../models/DynamoNotification.js');
+
+    const notified = [];
+    for (const userId of userIds) {
+      let persistedId = null;
+      try {
+        const saved = await createNotification({
+          userId,
+          userType: userId === clientId ? 'client' : userId === owner ? 'pm' : 'vendor',
+          type: notification.type || 'workspace_event',
+          title: notification.title || 'Workspace update',
+          message: notification.message || '',
+          relatedId: workspaceId,
+          relatedType: 'workspace',
+        });
+        persistedId = saved?.notificationId || null;
+      } catch (dbErr) {
+        console.error(`Failed to persist notification for ${userId}:`, dbErr);
+      }
+
+      try {
+        sendNotificationToUser(userId, {
+          id: persistedId || `ws_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          notificationId: persistedId,
+          type: notification.type || 'workspace_event',
+          title: notification.title || 'Workspace update',
+          message: notification.message || '',
+          data: { workspaceId, ...(notification.data || {}) },
+          timestamp: new Date().toISOString(),
+          priority: notification.priority || 'medium',
+          actionRequired: notification.actionRequired || false,
+          actions: notification.actions || [
+            { type: 'navigate', label: 'Open Workspace', url: `/VendorDashboard/workspace/${workspaceId}` }
+          ],
+        });
+      } catch (wsErr) {
+        console.error(`Failed to send WS notification for ${userId}:`, wsErr);
+      }
+      notified.push(userId);
+    }
+
+    res.status(200).json({ success: true, notified });
+  } catch (error) {
+    console.error('Error sending workspace notifications:', error);
+    res.status(500).json({ success: false, message: 'Failed to send notifications' });
+  }
+});
+
 export default router;
