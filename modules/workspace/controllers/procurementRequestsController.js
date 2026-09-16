@@ -3,7 +3,7 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 
 const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 const PROCUREMENT_REQUESTS_TABLE = 'procurement_requests';
-const PM_PROJECTS_TABLE = 'pm_projects_table';
+const PM_PROJECTS_TABLE = 'pm_projects';
 const SENT_RFQS_TABLE = process.env.SALES_SENT_RFQ_TABLE || process.env.SENT_RFQ_TABLE || 'sent_rfqs';
 const VENDOR_QUOTATIONS_TABLE = process.env.SALES_QUOTATIONS_TABLE || process.env.QUOTATION_OF_VENDOR_TABLE || 'quotations_Of_Vendors';
 const FINAL_QUOTATIONS_TABLE = process.env.DYNAMODB_QUOTATIONS || 'quotations';
@@ -11,7 +11,7 @@ const B2B_COMMISSION_TABLE = process.env.DYNAMODB_B2B_QUOTATIONS_WITH_COMMISSION
 const B2B_INVOICES_TABLE = process.env.DYNAMODB_B2B_INVOICES || 'b2b_invoices';
 
 /**
- * Helper: find project context for a given workspaceId from pm_projects_table.
+ * Helper: find project context for a given workspaceId from pm_projects.
  * Returns an object containing { clientId, projectId }.
  * We assume workspaceId is unique per project; if multiple projects match,
  * the first match is used.
@@ -116,7 +116,7 @@ const createProcurementRequest = async (req, res) => {
     const finalCreatedAt = createdAt || now.toISOString();
     const finalSentOn = sentOn || now.toISOString().split('T')[0];
     
-    // Resolve clientId & projectId from pm_projects_table based on workspaceId
+    // Resolve clientId & projectId from pm_projects based on workspaceId
     const projectContext = await getProjectContextForWorkspace(workspaceId);
     const clientId = projectContext?.clientId || null;
     const projectId = projectContext?.projectId || null;

@@ -16,10 +16,10 @@ const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
 const WORKSPACE_ITEMS_TABLE = 'workspace_items';
 const WORKSPACE_CUSTOMERS_TABLE = 'workspace_customers';
 const WORKSPACE_DELIVERY_CHALLANS_TABLE = 'workspace_delivery_challans';
-const PM_PROJECTS_TABLE = 'pm_projects_table';
+const PM_PROJECTS_TABLE = 'pm_projects';
 
 /**
- * Helper: find project context for a given workspaceId from pm_projects_table.
+ * Helper: find project context for a given workspaceId from pm_projects.
  * Returns an object containing { clientId, projectId }.
  * We assume workspaceId is unique per project; if multiple projects match,
  * the first match is used.
@@ -137,7 +137,7 @@ const createQuotation = async (req, res) => {
     const quotationId = `QT-${Date.now()}-${uuidv4().slice(0, 8)}`;
     const createdAt = new Date().toISOString();
 
-    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    // Resolve clientId & (canonical) projectId from pm_projects based on workspaceId
     const projectContext = await getProjectContextForWorkspace(workspaceId);
     const clientId = projectContext?.clientId || null;
     const resolvedProjectId = projectContext?.projectId || projectId || null;
@@ -321,7 +321,7 @@ const updateQuotation = async (req, res) => {
 
     const quotationData = targetQuotation;
 
-    // Resolve clientId & (canonical) projectId from pm_projects_table based on (possibly updated) workspaceId
+    // Resolve clientId & (canonical) projectId from pm_projects based on (possibly updated) workspaceId
     const effectiveWorkspaceId = req.body.workspaceId || quotationData.workspaceId;
     const projectContext = await getProjectContextForWorkspace(effectiveWorkspaceId);
     const clientId = projectContext?.clientId || quotationData.clientId || null;
@@ -851,7 +851,7 @@ const sendQuotationToPM = async (req, res) => {
     const quotationData = unmarshall(getResult.Item);
     const sentToPmAt = new Date().toISOString();
 
-    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    // Resolve clientId & (canonical) projectId from pm_projects based on workspaceId
     const projectContext = await getProjectContextForWorkspace(quotationData.workspaceId);
     const clientId = projectContext?.clientId || null;
     const resolvedProjectId = projectContext?.projectId || quotationData.projectId || null;
@@ -950,7 +950,87 @@ const sendQuotationToPM = async (req, res) => {
     });
   }
 };
-  
+
+/**
+ * Delete a quotation (Vendor action - draft quotations only)
+ * @route DELETE /api/workspace/quotations/:quotationId
+ * @access Private (Vendor only)
+ */
+const deleteQuotation = async (req, res) => {
+  try {
+    const { quotationId } = req.params;
+    const vendorId = req.user?.vendorId || req.body?.vendorId || req.query?.vendorId;
+    const userRole = req.user?.role;
+
+    console.log('🗑️ DELETE QUOTATION - Quotation ID:', quotationId, 'Vendor ID:', vendorId);
+
+    // Only vendors can delete quotations
+    if (userRole !== 'vendor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only vendors can delete quotations'
+      });
+    }
+
+    if (!quotationId || !vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Quotation ID and vendor ID are required'
+      });
+    }
+
+    // Verify the quotation exists and belongs to this vendor
+    const getResult = await dbClient.send(new GetItemCommand({
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      Key: marshall({ quotationId, vendorId })
+    }));
+
+    if (!getResult.Item) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quotation not found'
+      });
+    }
+
+    // Only draft quotations can be deleted - once sent to PM the quote is locked
+    const existingQuotation = unmarshall(getResult.Item);
+    const currentStatus = (existingQuotation.status || 'draft').toLowerCase();
+    if (currentStatus !== 'draft') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only draft quotations can be deleted. This quotation has already been sent to PM.'
+      });
+    }
+
+    // Delete from workspace_quotations
+    await dbClient.send(new DeleteItemCommand({
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      Key: marshall({ quotationId, vendorId })
+    }));
+
+    // Also remove the PM-review copy if the quote was already sent to PM
+    await dbClient.send(new DeleteItemCommand({
+      TableName: 'vendor_quotes_to_pm',
+      Key: marshall({ quotationId, vendorId })
+    }));
+
+    console.log(`✅ Deleted quotation ${quotationId} for vendor ${vendorId}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Quotation deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error deleting quotation:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete quotation',
+      error: error.message
+    });
+  }
+};
+
 /**
  * Send an invoice to PM for review
  * @route PUT /api/workspace/invoices/:invoiceId/send-to-pm
@@ -1007,7 +1087,7 @@ const sendInvoiceToPM = async (req, res) => {
     const invoiceData = unmarshall(getResult.Item);
     const sentToPmAt = new Date().toISOString();
 
-    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    // Resolve clientId & (canonical) projectId from pm_projects based on workspaceId
     const projectContext = await getProjectContextForWorkspace(invoiceData.workspaceId);
     const clientId = projectContext?.clientId || null;
     const resolvedProjectId = projectContext?.projectId || invoiceData.projectId || null;
@@ -1145,7 +1225,7 @@ const createInvoice = async (req, res) => {
     const invoiceId = `INV-${Date.now()}-${uuidv4().slice(0, 8)}`;
     const createdAt = new Date().toISOString();
 
-    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    // Resolve clientId & (canonical) projectId from pm_projects based on workspaceId
     const projectContext = await getProjectContextForWorkspace(workspaceId);
     const clientId = clientIdFromBody || projectContext?.clientId || null;
     const resolvedProjectId = projectContext?.projectId || projectId || null;
@@ -1435,7 +1515,7 @@ const createPurchaseOrderFromQuote = async (req, res) => {
     const purchaseOrderId = `PO-${Date.now()}-${uuidv4().slice(0, 8)}`;
     const createdAt = new Date().toISOString();
 
-    // Resolve clientId & (canonical) projectId from pm_projects_table based on workspaceId
+    // Resolve clientId & (canonical) projectId from pm_projects based on workspaceId
     const projectContext = await getProjectContextForWorkspace(workspaceId);
     const clientId = clientIdFromBody || projectContext?.clientId || null;
     const resolvedProjectId = projectContext?.projectId || projectId || null;
@@ -3514,6 +3594,7 @@ export {
   updateQuotation,
   updateQuotationStatus,
   sendQuotationToPM,
+  deleteQuotation,
   updateQuotationPdfUrl,
   savePmPOFile,
 

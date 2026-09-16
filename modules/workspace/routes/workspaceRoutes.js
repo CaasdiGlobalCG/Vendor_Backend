@@ -7,6 +7,7 @@ import {
   updateQuotation,
   updateQuotationStatus,
   sendQuotationToPM,
+  deleteQuotation,
   updateQuotationPdfUrl,
   savePmPOFile,
   createInvoice,
@@ -198,6 +199,13 @@ router.put('/quotations/:quotationId/status', authenticateUser, requirePM, updat
  * @access  Private
  */
 router.put('/quotations/:quotationId/send-to-pm', authenticateUser, requireVendor, sendQuotationToPM);
+
+/**
+ * @route   DELETE /api/workspace/quotations/:quotationId
+ * @desc    Delete a draft quotation (Vendor only; locked once sent to PM)
+ * @access  Private
+ */
+router.delete('/quotations/:quotationId', authenticateUser, requireVendor, deleteQuotation);
 
 /**
  * ========================================

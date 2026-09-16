@@ -5,7 +5,7 @@ import * as DynamoWorkspace from '../models/DynamoWorkspace.js';
 import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
 
 const LEAD_INVITATIONS_TABLE = 'lead_invitations_table';
-const PM_PROJECTS_TABLE = 'pm_projects_table';
+const PM_PROJECTS_TABLE = 'pm_projects';
 import { WORKSPACES_TABLE } from '../../../config/aws.js';
 
 /**

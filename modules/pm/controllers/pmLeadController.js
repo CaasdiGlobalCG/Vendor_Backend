@@ -4,7 +4,7 @@ import { dynamoDB } from '../../../config/aws.js';
 import { notifyVendorOfPMDecision, notifyVendorOfNewLead, notifyWorkspaceAccessGranted } from '../../../websocket/notificationSocket.js';
 
 const LEAD_INVITATIONS_TABLE = 'lead_invitations_table';
-const PM_PROJECTS_TABLE = 'pm_projects_table';
+const PM_PROJECTS_TABLE = 'pm_projects';
 
 // PM: Send leads to multiple vendors
 export const sendLeadsToVendors = async (req, res) => {

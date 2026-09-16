@@ -64,10 +64,11 @@ export function createVendorProfileTools(vendorId) {
     schema: z.object({}),
     func: async () => {
       try {
+        // Products table is keyed by productId only — no vendorId GSI.
         const result = await docClient.send(
-          new QueryCommand({
+          new ScanCommand({
             TableName: 'Products',
-            KeyConditionExpression: 'vendorId = :vid',
+            FilterExpression: 'vendorId = :vid',
             ExpressionAttributeValues: { ':vid': vendorId },
           })
         );

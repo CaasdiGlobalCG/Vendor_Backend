@@ -2,7 +2,7 @@ import AWS from 'aws-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import { dynamoDB, WORKSPACES_TABLE } from '../../../config/aws.js';
 
-const PM_PROJECTS_TABLE = 'pm_projects_table';
+const PM_PROJECTS_TABLE = 'pm_projects';
 
 // Get all projects for a PM
 export const getPMProjects = async (req, res) => {
