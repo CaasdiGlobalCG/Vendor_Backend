@@ -3965,11 +3965,35 @@ const clientApproveProgress = async (req, res) => {
       return progress;
     });
 
-    // Update workspace
-    const updatedWorkspace = await updateWorkspace(workspaceId, {
+    // Mark the approved task/subtask as completed so every role can see it is done
+    const approvedProgress = updatedProgressArray.find(progress => progress.id === targetId);
+    const workspaceUpdate = {
       progress_submissions: updatedProgressArray,
       project_status: updatedProgressArray[updatedProgressArray.length - 1] // Keep latest as reference
-    });
+    };
+
+    if (approvedProgress?.taskId && Array.isArray(currentWorkspace?.tasks)) {
+      const completedAt = approvedProgress.clientApprovedAt || new Date().toISOString();
+      workspaceUpdate.tasks = currentWorkspace.tasks.map(task => {
+        if (task.id !== approvedProgress.taskId) return task;
+
+        if (approvedProgress.subtaskId) {
+          const subtasks = (task.subtasks || []).map(subtask =>
+            subtask.id === approvedProgress.subtaskId
+              ? { ...subtask, status: 'completed', completedAt }
+              : subtask
+          );
+          const allSubtasksCompleted =
+            subtasks.length > 0 && subtasks.every(subtask => subtask.status === 'completed');
+          return { ...task, subtasks, status: allSubtasksCompleted ? 'completed' : task.status };
+        }
+
+        return { ...task, status: 'completed', completedAt };
+      });
+    }
+
+    // Update workspace
+    const updatedWorkspace = await updateWorkspace(workspaceId, workspaceUpdate);
 
     res.status(200).json({
       success: true,

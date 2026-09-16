@@ -365,7 +365,7 @@ export const verifyPasskeyMFA = async (req, res) => {
     // For now, we'll do a basic verification
     
     // Update last used timestamp
-    await DynamoPasskey.updatePasskey(passkey.passkeyId, passkey.userId, {
+    await DynamoPasskey.updatePasskey(passkey.credentialId, {
       lastUsedAt: new Date().toISOString()
     });
     

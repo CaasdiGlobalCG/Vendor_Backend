@@ -14,7 +14,7 @@ const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
  */
 const getWorkspacePurchaseOrders = async (req, res) => {
   try {
-    const { vendorId, status } = req.query;
+    const { vendorId, status, workspaceId } = req.query;
 
     if (!vendorId) {
       return res.status(400).json({
@@ -23,7 +23,7 @@ const getWorkspacePurchaseOrders = async (req, res) => {
       });
     }
 
-    console.log('📋 Fetching workspace purchase orders for vendor:', vendorId, 'status filter:', status);
+    console.log('📋 Fetching workspace purchase orders for vendor:', vendorId, 'status filter:', status, 'workspace:', workspaceId);
 
     // Base filter: all POs for this vendor
     let filterExpression = 'vendorId = :vendorId';
@@ -37,6 +37,12 @@ const getWorkspacePurchaseOrders = async (req, res) => {
       filterExpression += ' AND #status = :status';
       expressionAttributeNames['#status'] = 'status';
       expressionAttributeValues[':status'] = { S: status };
+    }
+
+    // Optional workspace filter so the vendor only sees POs for this workspace
+    if (workspaceId) {
+      filterExpression += ' AND workspaceId = :workspaceId';
+      expressionAttributeValues[':workspaceId'] = { S: workspaceId };
     }
 
     const params = {

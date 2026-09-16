@@ -17,6 +17,21 @@ import fetch from 'node-fetch';
 import { getUserByEmail } from '../models/DynamoUser.js';
 import { getVendorByEmail } from '../modules/vendor/models/DynamoVendor.js';
 import { verifyExternalSessionToken } from '../utils/externalSession.js';
+import { getTokenForSession } from '../utils/sessionStore.js';
+
+/** Extract a named cookie from the request header */
+function getCookieValue(req, name) {
+  const cookieHeader = req.headers?.cookie;
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    if (trimmed.slice(0, eq) === name) return decodeURIComponent(trimmed.slice(eq + 1));
+  }
+  return null;
+}
 
 /** JWKS cache: { pems: { [kid]: string }, fetchedAt: number } */
 let jwksCache = null;
@@ -98,12 +113,30 @@ async function fetchJwks(forceRefresh = false) {
  */
 export const authenticateUser = async (req, res, next) => {
   try {
+    // Token may arrive as a Bearer header OR the httpOnly vg_auth cookie —
+    // client-portal users reach vendor-hosted workspace APIs with the cookie
+    // only (no Bearer), same as authenticateCognitoJwt allows.
+    let token = null;
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader?.startsWith('Bearer ')) {
+      const candidate = authHeader.substring(7);
+      // Guard against placeholder values like "Bearer null"
+      if (candidate && candidate !== 'null' && candidate !== 'undefined') {
+        token = candidate;
+      }
+    }
+    if (!token) {
+      const cookieVal = getCookieValue(req, process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth');
+      if (cookieVal) {
+        token = cookieVal.split('.').length === 3
+          ? cookieVal
+          : await getTokenForSession(cookieVal);
+      }
+    }
+    if (!token) {
       return res.status(401).json({ success: false, message: 'Authorization token required.' });
     }
 
-    const token = authHeader.substring(7);
     const decodedHeader = jwt.decode(token, { complete: true });
     if (!decodedHeader) {
       return res.status(401).json({ success: false, message: 'Invalid token format.' });

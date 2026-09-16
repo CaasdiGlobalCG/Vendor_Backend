@@ -62,7 +62,7 @@ export const createPasskey = async (userId, passkeyData) => {
 export const getPasskeysByUserId = async (userId) => {
   const res = await dynamoDB.query({
     TableName: PASSKEYS_TABLE,
-    IndexName: 'userIdIndex', // Use Global Secondary Index
+    IndexName: 'UserIdIndex', // Use Global Secondary Index
     KeyConditionExpression: 'userId = :userId',
     ExpressionAttributeValues: {
       ':userId': userId
@@ -76,22 +76,19 @@ export const getPasskeysByUserId = async (userId) => {
  * Get a specific passkey by credential ID
  */
 export const getPasskeyByCredentialId = async (credentialId) => {
-  const res = await dynamoDB.query({
+  // credentialId is the table's partition key — use a direct GetItem
+  const res = await dynamoDB.get({
     TableName: PASSKEYS_TABLE,
-    IndexName: 'credentialIdIndex', // Use Global Secondary Index
-    KeyConditionExpression: 'credentialId = :credentialId',
-    ExpressionAttributeValues: {
-      ':credentialId': credentialId
-    }
+    Key: { credentialId }
   }).promise();
-  
-  return (res.Items || [])[0] || null;
+
+  return res.Item || null;
 };
 
 /**
  * Update passkey (e.g., counter for replay attack prevention)
  */
-export const updatePasskey = async (passkeyId, userId, updates) => {
+export const updatePasskey = async (credentialId, updates) => {
   const now = new Date().toISOString();
   const keys = Object.keys(updates || {});
   
@@ -109,10 +106,7 @@ export const updatePasskey = async (passkeyId, userId, updates) => {
   
   const res = await dynamoDB.update({
     TableName: PASSKEYS_TABLE,
-    Key: { 
-      passkeyId,
-      userId
-    },
+    Key: { credentialId },
     UpdateExpression,
     ExpressionAttributeNames,
     ExpressionAttributeValues,
@@ -133,10 +127,10 @@ export const userHasPasskey = async (userId) => {
 /**
  * Delete a passkey
  */
-export const deletePasskey = async (passkeyId) => {
+export const deletePasskey = async (credentialId) => {
   await dynamoDB.delete({
     TableName: PASSKEYS_TABLE,
-    Key: { passkeyId }
+    Key: { credentialId }
   }).promise();
   
   return true;
