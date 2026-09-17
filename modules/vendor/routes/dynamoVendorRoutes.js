@@ -351,8 +351,8 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
           hasValidValues(vendor.companyDetails) &&
           hasValidValues(vendor.serviceProductDetails) &&
           hasValidValues(vendor.bankDetails) &&
-          hasValidValues(vendor.complianceCertifications) &&
-          hasValidValues(vendor.additionalDetails) &&
+          // complianceCertifications and additionalDetails are mostly optional
+          // fields; only the acknowledgment on the final step gates completeness.
           vendor.additionalDetails?.acknowledgment === true)
     );
 

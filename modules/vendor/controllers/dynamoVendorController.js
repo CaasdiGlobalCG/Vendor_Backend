@@ -270,8 +270,10 @@ export const submitVendorForm = async (req, res) => {
       hasValidValues(formData.companyDetails) &&
       hasValidValues(formData.serviceProductDetails) &&
       hasValidValues(formData.bankDetails) &&
-      hasValidValues(formData.complianceCertifications) &&
-      hasValidValues(formData.additionalDetails) &&
+      // complianceCertifications and additionalDetails contain mostly optional
+      // fields (e.g. clientReferences, specialInstructions, optional uploads), so
+      // they must not gate completeness — a vendor who finished the wizard and
+      // acknowledged the terms has filled the form.
       formData.additionalDetails.acknowledgment === true // Make sure they've acknowledged the terms
     );
     
