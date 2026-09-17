@@ -8,6 +8,7 @@
 import { QueryCommand, UpdateCommand, DeleteCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
+import { bumpOrgPermissionVersion } from '../utils/versionStamp.utils.js';
 
 /**
  * GET /api/rbac/invitations
@@ -114,6 +115,10 @@ export async function cancelInvitation(req, res) {
         // Ignore — pending record might not exist
       }
     }
+
+    // Cancel doesn't change any active user's permissions, but bump to keep
+    // invitation list fresh on cached sessions.
+    await bumpOrgPermissionVersion(orgId);
 
     return res.status(200).json({
       success: true,

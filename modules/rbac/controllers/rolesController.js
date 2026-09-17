@@ -13,8 +13,9 @@ import {
 import { randomUUID } from 'crypto';
 import { docClient } from '../config/db.js';
 import { TABLES } from '../config/tables.js';
-import { VENDOR_MODULES, CLIENT_MODULES, getAllPermissions } from '../config/modules.js';
+import { VENDOR_MODULES, CLIENT_MODULES, SALES_MODULES, getAllPermissions } from '../config/modules.js';
 import { canManageUser } from '../utils/permission.utils.js';
+import { bumpOrgPermissionVersion } from '../utils/versionStamp.utils.js';
 
 /* ── helpers ────────────────────────────────────────────── */
 
@@ -55,17 +56,24 @@ async function countMembersWithRole(orgId, roleId) {
 }
 
 /**
- * Validate permissions against the module registry.
- * Returns { valid, invalid } arrays.
+ * Validate permissions against ALL module registries (vendor + client + sales).
+ * WHY: A role may have cross-platform permissions (e.g., sales_admin in a vendor
+ *      org has vendor+sales perms). Validating against only the caller's orgType
+ *      registry caused 400s when a client user edited a role with vendor perms.
+ *      Union validation accepts any permission valid in ANY platform.
  */
 function validatePermissions(permissions, orgType) {
-  const registry = orgType === 'client' ? CLIENT_MODULES : VENDOR_MODULES;
-  const validPerms = getAllPermissions(registry);
+  // Build a union of all valid permissions across all platforms
+  const allPerms = new Set([
+    ...getAllPermissions(VENDOR_MODULES),
+    ...getAllPermissions(CLIENT_MODULES),
+    ...getAllPermissions(SALES_MODULES),
+  ]);
   const valid = [];
   const invalid = [];
   for (const p of permissions) {
     if (p === '*:*') { invalid.push(p); continue; } // Only system super_admin gets wildcard
-    if (validPerms.has(p)) { valid.push(p); } else { invalid.push(p); }
+    if (allPerms.has(p)) { valid.push(p); } else { invalid.push(p); }
   }
   return { valid, invalid };
 }
@@ -132,6 +140,16 @@ export async function listRoles(req, res) {
     }));
 
     const roles = (result.Items || [])
+      .filter((role) => {
+        // Always show Super Admin (level 0) — it has *:* and applies everywhere
+        if ((role.roleLevel ?? 99) === 0) return true;
+        // Filter: only show roles whose permissions are valid for this orgType.
+        // WHY: A client org should not see vendor-only roles like sales_admin
+        //      (which has crm:manage, shipments:manage, etc. — not in CLIENT_MODULES).
+        //      This prevents confusion and the 400 error when editing cross-platform roles.
+        const { invalid } = validatePermissions(role.permissions || [], orgType);
+        return invalid.length === 0;
+      })
       .sort((a, b) => (a.roleLevel ?? 99) - (b.roleLevel ?? 99))
       .map((role) => ({
         roleId:          role.roleId,
@@ -316,6 +334,8 @@ export async function createRole(req, res) {
       permissionCount: valid.length, copiedFrom: copyFrom || null,
     }, req.auth?.email);
 
+    await bumpOrgPermissionVersion(orgId);
+
     return res.status(201).json({ role: roleItem });
   } catch (error) {
     console.error('[RBAC] createRole error:', error);
@@ -428,6 +448,8 @@ export async function updateRole(req, res) {
       newPermissionCount: permissions?.length ?? null,
     }, req.auth?.email);
 
+    await bumpOrgPermissionVersion(orgId);
+
     return res.status(200).json({ message: 'Role updated successfully', roleId });
   } catch (error) {
     console.error('[RBAC] updateRole error:', error);
@@ -489,6 +511,8 @@ export async function deleteRole(req, res) {
     logAudit(orgId, userId, 'role.deleted', {
       roleId, roleName: existingRole.roleName,
     }, req.auth?.email);
+
+    await bumpOrgPermissionVersion(orgId);
 
     return res.status(200).json({ message: 'Role deleted successfully', roleId });
   } catch (error) {

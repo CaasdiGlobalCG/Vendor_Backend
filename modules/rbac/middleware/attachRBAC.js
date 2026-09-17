@@ -29,10 +29,12 @@ import { buildExternalRbac } from '../../../utils/externalSession.js';
  */
 function resolveOrg(req) {
   // parentOrgId is the stable RBAC org identity (rbac_organizations PK, rbac_members orgId).
-  // attachVendorId sets req.parentOrgId by projecting it from the vendors table.
+  // attachOrgId sets req.parentOrgId + req.orgType (generic — works for vendor + client).
+  // attachVendorId sets req.parentOrgId by projecting it from the vendors table (vendor-only).
   // req.vendorId / req.clientId are preserved for other middleware that needs the native IDs.
   if (req.parentOrgId) {
-    const orgType = req.clientId ? 'client' : 'vendor';
+    // Prefer explicit orgType from attachOrgId; fall back to inferring from native IDs
+    const orgType = req.orgType || (req.clientId ? 'client' : 'vendor');
     return { orgId: req.parentOrgId, orgType };
   }
   if (req.vendorId) return { orgId: req.vendorId, orgType: 'vendor' };

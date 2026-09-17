@@ -85,7 +85,7 @@ app.locals.actionServices = {
   })
 };
 
-const PROD_ORIGINS = ['https://caasdiglobal.in', 'https://www.caasdiglobal.in'];
+const PROD_ORIGINS = ['https://caasdiglobal.in', 'https://www.caasdiglobal.in', 'https://staging.caasdiglobal.in'];
 const LOCAL_DEV_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:5174',

@@ -1,9 +1,25 @@
 // ============================================================
-// FILE: emailTemplates.js
-// PURPOSE: HTML email templates for RBAC invitation emails.
+// FILE: emailTemplates.utils.js
+// PURPOSE: HTML email template builders for transactional emails.
 //          Responsive, inline-styled for maximum email client compat.
-// CONNECTS TO: emailService.js (imports buildInvitationEmail)
+//          All user-supplied content is HTML-escaped to prevent XSS.
+// CONNECTS TO: emailServices.service.js (consumes these builders)
 // ============================================================
+
+/**
+ * Escape HTML special characters to prevent XSS in email templates.
+ * @param {string} str – Raw string
+ * @returns {string} Escaped string
+ */
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '"')
+    .replace(/'/g, '&#039;');
+}
 
 /**
  * Build a responsive HTML invitation email.
@@ -97,7 +113,7 @@ export function buildInvitationEmail({
                 <tr>
                   <td align="center">
                     <a href="${inviteUrl}" target="_blank" style="display: inline-block; background-color: ${brandColor}; color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; padding: 14px 40px; border-radius: 8px; letter-spacing: 0.01em;">
-                      Accept Invitation &amp; Set Up Your Account
+                      Accept Invitation & Set Up Your Account
                     </a>
                   </td>
                 </tr>
@@ -223,19 +239,4 @@ export function buildRemovalEmail({ orgName, removedByName, reason, orgType = 'v
   </table>
 </body>
 </html>`;
-}
-
-/**
- * Escape HTML special characters to prevent XSS in email templates.
- * @param {string} str – Raw string
- * @returns {string} Escaped string
- */
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }
