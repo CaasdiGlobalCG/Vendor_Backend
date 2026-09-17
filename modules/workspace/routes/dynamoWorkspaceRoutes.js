@@ -51,8 +51,14 @@ router.put('/workspaces/:workspaceId/permissions', requirePermission('workspace'
 router.post('/workspaces/:workspaceId/request-completion', requirePermission('workspace', 'edit'), dynamoWorkspaceController.requestProjectCompletion);
 
 // Access status and verification
-router.get('/workspace-access/status/:workspaceId', requirePermission('workspace', 'view'), getWorkspaceAccessStatus);
-router.get('/workspace-access/verify/:workspaceId', requirePermission('workspace', 'view'), verifyWorkspaceAccess);
+// For userType=client the workspace's own accessControl/sharedWith lists are the
+// gate — vendor-org RBAC scope doesn't apply to client users.
+const requireWorkspaceViewUnlessClient = (req, res, next) => {
+  if (req.query.userType === 'client') return next();
+  return requirePermission('workspace', 'view')(req, res, next);
+};
+router.get('/workspace-access/status/:workspaceId', requireWorkspaceViewUnlessClient, getWorkspaceAccessStatus);
+router.get('/workspace-access/verify/:workspaceId', requireWorkspaceViewUnlessClient, verifyWorkspaceAccess);
 
 // Purchase orders for a vendor (fallback route under dynamo workspace router)
 // This ensures /api/workspace/purchase-orders works even if workspaceRoutes

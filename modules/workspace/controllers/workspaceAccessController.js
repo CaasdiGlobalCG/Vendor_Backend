@@ -28,7 +28,9 @@ export const getWorkspaceAccessStatus = async (req, res) => {
       });
     }
 
-    if (!canAccessWorkspace(req.rbac, workspaceItem.workspaceId || workspaceId, workspaceItem.projectId)) {
+    // Vendor RBAC scope check applies to pm/vendor callers only; client callers are
+    // validated via the workspace's own accessControl/sharedWith lists below.
+    if (userType !== 'client' && !canAccessWorkspace(req.rbac, workspaceItem.workspaceId || workspaceId, workspaceItem.projectId)) {
       return res.status(403).json({ success: false, error: 'Access denied for this workspace' });
     }
 
@@ -74,7 +76,9 @@ export const verifyWorkspaceAccess = async (req, res) => {
       });
     }
 
-    if (!canAccessWorkspace(req.rbac, workspace.workspaceId || workspaceId, workspace.projectId)) {
+    // Vendor RBAC scope check applies to pm/vendor callers only; client callers are
+    // validated below via the workspace's own accessControl/sharedWith lists.
+    if (userType !== 'client' && !canAccessWorkspace(req.rbac, workspace.workspaceId || workspaceId, workspace.projectId)) {
       return res.status(403).json({ success: false, error: 'Access denied for this workspace' });
     }
 

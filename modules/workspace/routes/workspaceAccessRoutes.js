@@ -7,6 +7,13 @@ import { requirePermission } from '../../rbac/middleware/requirePermission.js';
 
 const router = express.Router();
 
+// For userType=client the workspace's own accessControl/sharedWith lists are the
+// gate — vendor-org RBAC scope doesn't apply to client users.
+const requireWorkspaceViewUnlessClient = (req, res, next) => {
+  if (req.query.userType === 'client') return next();
+  return requirePermission('workspace', 'view')(req, res, next);
+};
+
 router.use(authenticateCognitoJwt);
 router.use(attachVendorId);
 router.use(attachRBAC);
@@ -20,6 +27,6 @@ router.post('/collaborative', requirePermission('workspace', 'view'), workspaceA
 router.get('/:workspaceId/access-status', requirePermission('workspace', 'view'), workspaceAccessController.getWorkspaceAccessStatus);
 
 // Verify workspace access (middleware route - used by other workspace routes)
-router.use('/:workspaceId/verify', requirePermission('workspace', 'view'), workspaceAccessController.verifyWorkspaceAccess);
+router.use('/:workspaceId/verify', requireWorkspaceViewUnlessClient, workspaceAccessController.verifyWorkspaceAccess);
 
 export default router;
