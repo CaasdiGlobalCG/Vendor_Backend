@@ -5,7 +5,13 @@ import { v4 as uuidv4 } from 'uuid';
 const generateCustomVendorId = (vendorData) => {
   try {
     // Get the first 3 letters of the name (uppercase)
-    const name = vendorData.name || vendorData.vendorDetails?.primaryContactName || 'UNKNOWN';
+    const name = vendorData.name
+      || vendorData.companyName
+      || vendorData.vendorDetails?.companyName
+      || vendorData.vendorDetails?.vendorName
+      || vendorData.vendorDetails?.primaryContactName
+      || [vendorData.vendorDetails?.firstName, vendorData.vendorDetails?.lastName].filter(Boolean).join(' ')
+      || 'UNKNOWN';
     // Ensure we have at least 3 characters, pad with 'X' if needed
     const namePrefix = (name.substring(0, 3) + 'XXX').substring(0, 3).toUpperCase();
     

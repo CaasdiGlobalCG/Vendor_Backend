@@ -227,11 +227,23 @@ export const submitVendorForm = async (req, res) => {
 
     // Get the email from the request body or from vendorDetails
     const primaryEmail = req.body.email || formData.vendorDetails.primaryContactEmail;
-    
+
     // Ensure the email is also in vendorDetails
     if (primaryEmail && (!formData.vendorDetails.primaryContactEmail || formData.vendorDetails.primaryContactEmail !== primaryEmail)) {
       formData.vendorDetails.primaryContactEmail = primaryEmail;
     }
+
+    // Normalize identity fields — the forms collect vendorName/firstName/lastName
+    // while downstream consumers (auditor list, vendorId generation, emails)
+    // look for companyName/primaryContactName/name.
+    const vd = formData.vendorDetails;
+    vd.companyName = vd.companyName || vd.vendorName || '';
+    vd.primaryContactName = vd.primaryContactName
+      || [vd.firstName, vd.lastName].filter(Boolean).join(' ')
+      || vd.vendorName
+      || '';
+    formData.companyName = formData.companyName || vd.companyName;
+    formData.name = formData.name || vd.companyName || vd.primaryContactName || primaryEmail;
     
     console.log(`Form submission for email: ${primaryEmail}`);
     
@@ -284,16 +296,64 @@ export const submitVendorForm = async (req, res) => {
     if (vendor) {
       // Scenario 1: Vendor already exists. Update it with the new form data.
       console.log(`Updating existing vendor with ID: ${vendor.id}`);
+
+      // ── Resubmit flow ────────────────────────────────────────────────
+      // When the auditor granted re-edit access to specific KYC sections
+      // (status === 'resubmit_requested'), only those sections may change —
+      // every other section reverts to the stored record server-side so a
+      // tampered payload cannot touch non-granted sections.
+      const isResubmit = String(vendor.status || '').toLowerCase() === 'resubmit_requested';
+      const grantedSectionKeys = isResubmit
+        ? Object.keys(vendor.resubmitPermissions || {}).filter(
+            (k) => vendor.resubmitPermissions[k]?.granted === true
+          )
+        : [];
+
+      const sectionValue = (sectionKey, attr) =>
+        isResubmit && !grantedSectionKeys.includes(sectionKey)
+          ? (vendor[attr] || {})
+          : formData[attr];
+
+      const effectiveVendorDetails = sectionValue('vendor', 'vendorDetails');
+      const effectiveCompanyName = effectiveVendorDetails.companyName
+        || effectiveVendorDetails.vendorName
+        || vendor.companyName
+        || '';
+      const effectivePrimaryContactName = effectiveVendorDetails.primaryContactName
+        || [effectiveVendorDetails.firstName, effectiveVendorDetails.lastName].filter(Boolean).join(' ')
+        || effectiveVendorDetails.vendorName
+        || '';
+
       const updatedVendorData = {
-        vendorDetails: formData.vendorDetails,
-        companyDetails: formData.companyDetails,
-        serviceProductDetails: formData.serviceProductDetails,
-        bankDetails: formData.bankDetails,
-        complianceCertifications: formData.complianceCertifications,
-        additionalDetails: formData.additionalDetails,
-        hasFilledForm: isFormComplete,
+        vendorDetails: effectiveVendorDetails,
+        companyDetails: sectionValue('company', 'companyDetails'),
+        serviceProductDetails: sectionValue('service', 'serviceProductDetails'),
+        bankDetails: sectionValue('bank', 'bankDetails'),
+        complianceCertifications: sectionValue('compliance', 'complianceCertifications'),
+        additionalDetails: sectionValue('additional', 'additionalDetails'),
+        hasFilledForm: isResubmit ? true : isFormComplete,
+        name: effectiveCompanyName || effectivePrimaryContactName || vendor.name,
+        companyName: effectiveCompanyName || vendor.companyName,
         status: vendor.status === 'approved' ? 'approved' : 'pending'
       };
+
+      if (isResubmit) {
+        updatedVendorData.status = 'pending';
+        updatedVendorData.resubmitPermissions = {};
+        updatedVendorData.resubmitRemarks = null;
+        updatedVendorData.resubmitRequestedAt = null;
+        updatedVendorData.resubmittedAt = new Date().toISOString();
+        // Reset auditor review state for the re-submitted sections so they
+        // go back through verification.
+        updatedVendorData.approvedSections = {
+          ...(vendor.approvedSections || {}),
+          ...grantedSectionKeys.reduce((acc, key) => {
+            acc[key] = 'pending';
+            return acc;
+          }, {})
+        };
+      }
+
       vendor = await DynamoVendor.updateVendor(vendor.id, updatedVendorData);
 
     } else {
@@ -307,7 +367,7 @@ export const submitVendorForm = async (req, res) => {
         newVendorData = {
           ...formData,
           email: primaryEmail,
-          name: formData.vendorDetails.primaryContactName || googleUser.displayName,
+          name: vd.companyName || vd.primaryContactName || googleUser.displayName,
           googleId: googleUser.googleId, // This links the vendor to the Google account
           hasFilledForm: isFormComplete,
           status: 'pending',
@@ -319,7 +379,7 @@ export const submitVendorForm = async (req, res) => {
         newVendorData = {
           ...formData,
           email: primaryEmail,
-          name: formData.vendorDetails.primaryContactName,
+          name: vd.companyName || vd.primaryContactName || primaryEmail,
           hasFilledForm: isFormComplete,
           status: 'pending',
           role: 'vendor'

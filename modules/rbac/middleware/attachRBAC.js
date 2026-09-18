@@ -14,6 +14,8 @@ import { TABLES } from '../config/tables.js';
 import { derivePlatformAccess } from '../config/modules.js';
 import { normalizeScopeAccess } from '../utils/scopeAccess.utils.js';
 import { buildExternalRbac } from '../../../utils/externalSession.js';
+import { dynamoDB, VENDORS_TABLE } from '../../../config/aws.js';
+import { provisionOrgOwner } from '../scripts/seedDefaults.js';
 
 /**
  * Determines which org ID field to use based on what's already on the request.
@@ -40,6 +42,46 @@ function resolveOrg(req) {
   if (req.vendorId) return { orgId: req.vendorId, orgType: 'vendor' };
   if (req.clientId) return { orgId: req.clientId, orgType: 'client' };
   return null;
+}
+
+/**
+ * Auto-provision the org owner as super_admin when no membership exists.
+ * Vendor orgs created via KYC submit seed roles but never create the owner's
+ * rbac_members record — if the authenticated user's email owns this vendor
+ * record, provision them now (idempotent) instead of denying access.
+ */
+async function tryProvisionVendorOwner(req, org) {
+  try {
+    if (org.orgType !== 'vendor') return false;
+    const email = String(req.auth?.email || req.user?.email || '').trim().toLowerCase();
+    const userId = req.auth?.sub || req.user?.sub || req.user?.id;
+    if (!email || !userId) return false;
+
+    const { Item: vendor } = await docClient.send(new GetCommand({
+      TableName: VENDORS_TABLE,
+      Key: { vendorId: req.vendorId || org.orgId },
+      ProjectionExpression: 'email, #nm, vendorDetails',
+      ExpressionAttributeNames: { '#nm': 'name' },
+    }));
+    const ownerEmail = String(
+      vendor?.email || vendor?.vendorDetails?.primaryContactEmail || ''
+    ).trim().toLowerCase();
+    if (!ownerEmail || ownerEmail !== email) return false;
+
+    await provisionOrgOwner({
+      orgId: org.orgId,
+      orgType: 'vendor',
+      orgName: vendor?.name || vendor?.vendorDetails?.vendorName || vendor?.vendorDetails?.companyName,
+      userId,
+      email,
+      extraOrgFields: { vendorId: vendor?.vendorId },
+    });
+    console.log(`[RBAC] Auto-provisioned vendor owner ${email} as super_admin for org ${org.orgId}`);
+    return true;
+  } catch (err) {
+    console.warn('[RBAC] Vendor owner auto-provision failed:', err?.message);
+    return false;
+  }
 }
 
 /**
@@ -91,7 +133,19 @@ export async function attachRBAC(req, res, next) {
       ExpressionAttributeNames: { '#s': 'status' },
     }));
 
-    const member = memberResult.Item;
+    let member = memberResult.Item;
+
+    // Vendor orgs created via KYC submit may be missing the owner member
+    // record — provision the authenticated owner before denying access.
+    if (!member && (await tryProvisionVendorOwner(req, org))) {
+      const retry = await docClient.send(new GetCommand({
+        TableName: TABLES.MEMBERS,
+        Key: { orgId: org.orgId, userId },
+        ProjectionExpression: 'roleId, roleName, #s, email, permissionOverrides, platformAccess, projectAccess, workspaceAccess',
+        ExpressionAttributeNames: { '#s': 'status' },
+      }));
+      member = retry.Item;
+    }
 
     // Strict mode: membership is required for all RBAC-protected actions.
     if (!member) {

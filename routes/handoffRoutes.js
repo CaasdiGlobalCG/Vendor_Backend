@@ -679,6 +679,8 @@ router.get('/handoff/vendor-exchange', async (req, res) => {
 
     handoffStore.delete(code);
 
+    const entryDecoded = jwt.decode(entry.token) || {};
+
     const cookieName = process.env.VENDOR_AUTH_COOKIE_NAME || 'vg_auth';
     const sameSiteRaw = (process.env.VENDOR_AUTH_COOKIE_SAMESITE || 'Lax').toLowerCase();
     let sameSite = sameSiteRaw === 'none' ? 'None' : sameSiteRaw === 'strict' ? 'Strict' : 'Lax';
