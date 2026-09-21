@@ -4,6 +4,8 @@ import {
   uploadWorkspaceFile, 
   getWorkspaceFileDownloadUrl, 
   getWorkspaceFileViewUrl,
+  streamWorkspaceFile,
+  previewWorkspaceFile,
   deleteWorkspaceFile, 
   listWorkspaceFiles,
   getWorkspaceFileMetadata
@@ -37,6 +39,7 @@ const upload = multer({
       'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/avi', 'video/quicktime', 'video/webm',
       // CAD and Design files
       'application/dwg', 'application/dxf', 'application/step', 'application/iges',
+      'application/cdr', 'application/x-cdr', 'application/vnd.corel-draw', 'image/x-coreldraw',
       // Code files
       'text/x-python', 'text/x-java-source', 'text/x-c', 'text/x-c++src',
       // Generic/Unknown (for files that don't have proper MIME detection)
@@ -60,7 +63,7 @@ const upload = multer({
       // Audio/Video
       '.mp3', '.wav', '.ogg', '.m4a', '.mp4', '.avi', '.mov', '.webm', '.mkv',
       // CAD and Design
-      '.dwg', '.dxf', '.step', '.stp', '.iges', '.igs', '.stl', '.obj',
+      '.dwg', '.dxf', '.step', '.stp', '.iges', '.igs', '.stl', '.obj', '.cdr',
       // Code files
       '.py', '.java', '.c', '.cpp', '.h', '.hpp', '.php', '.rb', '.go', '.rs',
       // Other common formats
@@ -82,6 +85,14 @@ router.post('/upload', upload.single('file'), uploadWorkspaceFile);
 
 // Get file download URL
 router.get('/download/:fileId', getWorkspaceFileDownloadUrl);
+
+// Stream file bytes (same-origin proxy — used by the CAD 3D preview viewer,
+// avoids requiring S3 CORS config for fetch/arrayBuffer reads)
+router.get('/stream/:fileId', streamWorkspaceFile);
+
+// Convert proprietary CAD files for preview (dwg -> dxf, cdr -> svg) via
+// LibreOffice; the converted output is cached in S3 next to the source file
+router.get('/preview/:fileId', previewWorkspaceFile);
 
 // Get signed URL for file viewing
 router.post('/view-url', getWorkspaceFileViewUrl);

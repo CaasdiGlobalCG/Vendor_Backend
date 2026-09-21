@@ -398,6 +398,71 @@ router.get('/me', authenticateCognitoJwt, async (req, res) => {
   }
 });
 
+// Vendor-initiated KYC update request (Settings → Privacy & Data → Update KYC).
+// The vendor asks the auditor for permission to re-edit the KYC forms.
+// Once the auditor grants access (resubmit flow), the record's status becomes
+// 'resubmit_requested' and the frontend routes the vendor back into the forms.
+router.post('/kyc-update-request', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const rawEmail = req.auth?.email;
+    if (!rawEmail) {
+      return res.status(401).json({ success: false, message: 'Not authenticated' });
+    }
+    const email = String(rawEmail).trim().toLowerCase();
+    const vendor = await DynamoVendor.getVendorByEmail(email);
+
+    if (!vendor) {
+      return res.status(404).json({ success: false, message: 'Vendor not found' });
+    }
+
+    const status = String(vendor.status || '').trim().toLowerCase();
+
+    // Already granted — vendor currently has edit access.
+    if (status === 'resubmit_requested') {
+      return res.status(200).json({
+        success: true,
+        data: { kycUpdateRequest: vendor.kycUpdateRequest || { status: 'granted' }, alreadyGranted: true },
+        message: 'KYC update access is already granted'
+      });
+    }
+
+    // Request only makes sense once the KYC was submitted/approved — while it
+    // is still under review there is nothing to unlock.
+    if (status !== 'approved' && status !== 'initial_approved') {
+      return res.status(409).json({
+        success: false,
+        message: 'KYC update can only be requested after the KYC is approved'
+      });
+    }
+
+    // Idempotent: a pending request already exists.
+    if (vendor.kycUpdateRequest?.status === 'pending') {
+      return res.status(200).json({
+        success: true,
+        data: { kycUpdateRequest: vendor.kycUpdateRequest, alreadyPending: true },
+        message: 'KYC update request is already pending auditor review'
+      });
+    }
+
+    const kycUpdateRequest = {
+      status: 'pending',
+      requestedAt: new Date().toISOString(),
+      note: typeof req.body?.note === 'string' ? req.body.note.slice(0, 500) : null
+    };
+
+    await DynamoVendor.updateVendor(vendor.id, { kycUpdateRequest });
+
+    return res.status(200).json({
+      success: true,
+      data: { kycUpdateRequest },
+      message: 'KYC update request submitted. The auditor will review it shortly.'
+    });
+  } catch (error) {
+    console.error('Error in kyc-update-request:', error);
+    return res.status(500).json({ success: false, message: 'Error submitting KYC update request', error: error.message });
+  }
+});
+
 // Get vendor by ID (explicit endpoint)
 router.get('/vendor/:id', async (req, res) => {
   try {

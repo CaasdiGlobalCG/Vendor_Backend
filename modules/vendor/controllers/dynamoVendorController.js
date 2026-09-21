@@ -343,6 +343,15 @@ export const submitVendorForm = async (req, res) => {
         updatedVendorData.resubmitRemarks = null;
         updatedVendorData.resubmitRequestedAt = null;
         updatedVendorData.resubmittedAt = new Date().toISOString();
+        // Close out a vendor-initiated "Update KYC" request — the resubmission
+        // fulfils it and a fresh request would be needed for the next update.
+        if (vendor.kycUpdateRequest) {
+          updatedVendorData.kycUpdateRequest = {
+            ...vendor.kycUpdateRequest,
+            status: 'fulfilled',
+            fulfilledAt: updatedVendorData.resubmittedAt
+          };
+        }
         // Reset auditor review state for the re-submitted sections so they
         // go back through verification.
         updatedVendorData.approvedSections = {
