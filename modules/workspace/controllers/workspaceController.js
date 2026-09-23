@@ -5,6 +5,7 @@ import PDFDocument from 'pdfkit';
 import { getStreamAsBuffer } from 'get-stream';
 import { uploadFileToS3 } from '../../../utils/s3Utils.js';
 import { updateWorkspace, getWorkspaceById } from '../models/DynamoWorkspace.js';
+import { parseNumber, approxEqual, nameSimilarity } from './poAutoCheckController.js';
 
 const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 
@@ -556,7 +557,8 @@ const getQuotations = async (req, res) => {
         customQuoteId: quote.customQuoteId || quote.quoteNumber || null, // Return custom quote ID for display
         quoteNumber: quote.quoteNumber || quote.customQuoteId || null, // Also return as quoteNumber
         displayQuoteId: displayQuoteId, // Use custom ID if available, otherwise use system ID
-        date: quote.quoteDate ? new Date(quote.quoteDate).toLocaleDateString('en-GB') :
+        quoteDate: quote.quotationDate || quote.quoteDate || null, // Raw date for edit-form rehydration
+        date: (quote.quotationDate || quote.quoteDate) ? new Date(quote.quotationDate || quote.quoteDate).toLocaleDateString('en-GB') :
           quote.createdAt ? new Date(quote.createdAt).toLocaleDateString('en-GB') : 'N/A',
         customer: quote.customerName || 'Unknown Customer',
         cgstAmount,
@@ -594,6 +596,9 @@ const getQuotations = async (req, res) => {
         subtaskId: quote.subtaskId,
         subtaskName: quote.subtaskName,
         expiryDate: quote.expiryDate,
+        discount: quote.discount || null,
+        tdsType: quote.tdsType || '',
+        tdsValue: quote.tdsValue ?? null,
         customerDetails: quote.customerDetails,
         pdfUrl: quote.pdfUrl || null,  // Include pdfUrl in the response
         clientId: quote.clientId || null
@@ -1092,6 +1097,110 @@ const sendInvoiceToPM = async (req, res) => {
     const clientId = projectContext?.clientId || null;
     const resolvedProjectId = projectContext?.projectId || invoiceData.projectId || null;
 
+    // ---- Match the invoice against the PO sent to the vendor ----
+    // If the invoice doesn't match the PO (items/qty/rates/amounts), raise a
+    // red flag — finance must review it before it can go any further.
+    let invoiceMatchCheck = null;
+    try {
+      const poFilterParts = [];
+      const poAttrValues = { ':vid': invoiceData.vendorId };
+      if (invoiceData.referencePoNumber) {
+        poAttrValues[':poNum'] = invoiceData.referencePoNumber;
+        poFilterParts.push('purchaseOrderNumber = :poNum OR customPoId = :poNum OR purchaseOrderId = :poNum');
+      }
+      if (invoiceData.quoteId) {
+        poAttrValues[':qid'] = invoiceData.quoteId;
+        poFilterParts.push('quotationId = :qid');
+      }
+      if (invoiceData.referenceQuoteNumber) {
+        poAttrValues[':rqn'] = invoiceData.referenceQuoteNumber;
+        poFilterParts.push('referenceQuoteNumber = :rqn');
+      }
+
+      if (poFilterParts.length) {
+        const poScan = await dbClient.send(new ScanCommand({
+          TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
+          FilterExpression: `vendorId = :vid AND (${poFilterParts.join(' OR ')})`,
+          ExpressionAttributeValues: marshall(poAttrValues)
+        }));
+
+        const po = poScan.Items?.length ? unmarshall(poScan.Items[0]) : null;
+
+        if (po && Array.isArray(po.items) && po.items.length) {
+          const discrepancies = [];
+          const invItems = Array.isArray(invoiceData.items) ? invoiceData.items : [];
+          const invTotal = parseNumber(invoiceData.total) ?? 0;
+          const poTotal = parseNumber(po.total) ?? 0;
+
+          for (const poItem of po.items) {
+            const poName = poItem.description || poItem.name || '';
+            let best = null;
+            let bestScore = 0;
+            for (const invItem of invItems) {
+              const score = nameSimilarity(poName, invItem.description || invItem.name || '');
+              if (score > bestScore) { bestScore = score; best = invItem; }
+            }
+
+            if (!best || bestScore < 0.5) {
+              discrepancies.push(`PO item "${poName}" not found on the invoice`);
+              continue;
+            }
+
+            const poQty = parseNumber(poItem.quantity) ?? 1;
+            const invQty = parseNumber(best.quantity) ?? 1;
+            if (Math.abs(invQty - poQty) > 0.001) {
+              discrepancies.push(`"${poName}": invoice qty ${invQty} ≠ PO qty ${poQty}`);
+            }
+
+            const poRate = parseNumber(poItem.rate);
+            const invRate = parseNumber(best.rate);
+            if (poRate !== null && invRate !== null && !approxEqual(invRate, poRate)) {
+              discrepancies.push(`"${poName}": invoice rate ₹${invRate} ≠ PO rate ₹${poRate}`);
+            }
+
+            const poAmt = parseNumber(poItem.amount);
+            const invAmt = parseNumber(best.amount);
+            if (poAmt !== null && invAmt !== null && !approxEqual(invAmt, poAmt)) {
+              discrepancies.push(`"${poName}": invoice amount ₹${invAmt} ≠ PO amount ₹${poAmt}`);
+            }
+          }
+
+          for (const invItem of invItems) {
+            const invName = invItem.description || invItem.name || '';
+            const found = po.items.some(
+              (p) => nameSimilarity(p.description || p.name || '', invName) >= 0.5
+            );
+            if (!found) discrepancies.push(`Invoice item "${invName}" is not on the PO`);
+          }
+
+          if (poTotal && invTotal && !approxEqual(invTotal, poTotal)) {
+            discrepancies.push(`Invoice total ₹${invTotal} ≠ PO total ₹${poTotal}`);
+          }
+
+          invoiceMatchCheck = {
+            checked: true,
+            purchaseOrderId: po.purchaseOrderId,
+            matched: discrepancies.length === 0,
+            discrepancies,
+            checkedAt: sentToPmAt
+          };
+        } else {
+          invoiceMatchCheck = {
+            checked: false,
+            reason: po ? 'PO has no items to compare' : 'No matching purchase order found',
+            checkedAt: sentToPmAt
+          };
+        }
+      } else {
+        invoiceMatchCheck = { checked: false, reason: 'Invoice has no PO/quotation reference', checkedAt: sentToPmAt };
+      }
+    } catch (matchErr) {
+      console.warn('⚠️ Invoice↔PO match check failed, proceeding without flag:', matchErr.message);
+    }
+
+    const redFlagged = invoiceMatchCheck?.checked === true && invoiceMatchCheck.matched === false;
+    const newStatus = redFlagged ? 'red_flagged' : 'sent to pm for review';
+
     // Update the invoice status in workspace_invoices table
     const updateParams = {
       TableName: WORKSPACE_INVOICES_TABLE,
@@ -1099,16 +1208,18 @@ const sendInvoiceToPM = async (req, res) => {
         invoiceId,
         vendorId
       }),
-      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #sentToPmAt = :sentToPmAt',
+      UpdateExpression:
+        'SET #status = :status, #updatedAt = :updatedAt, #sentToPmAt = :sentToPmAt, invoiceMatchCheck = :matchCheck',
       ExpressionAttributeNames: {
         '#status': 'status',
         '#updatedAt': 'updatedAt',
         '#sentToPmAt': 'sentToPmAt'
       },
       ExpressionAttributeValues: marshall({
-        ':status': 'sent to pm for review',
+        ':status': newStatus,
         ':updatedAt': sentToPmAt,
-        ':sentToPmAt': sentToPmAt
+        ':sentToPmAt': sentToPmAt,
+        ':matchCheck': invoiceMatchCheck || null
       }),
       ReturnValues: 'ALL_NEW'
     };
@@ -1120,7 +1231,11 @@ const sendInvoiceToPM = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Invoice sent to PM for review',
+      message: redFlagged
+        ? 'Invoice flagged: it does not match the PO — sent to Finance for review'
+        : 'Invoice sent to PM for review',
+      redFlag: redFlagged,
+      invoiceMatchCheck,
       data: updatedInvoice
     });
   } catch (error) {
@@ -2821,6 +2936,38 @@ const sendPurchaseOrderToVendor = async (req, res) => {
 
     const purchaseOrder = unmarshall(result.Items[0]);
 
+    // If this PO originated from a client-uploaded PO file, the PM must have run
+    // the auto-check and it must have passed before the PO can go to the vendor.
+    if (purchaseOrder.quotationId) {
+      try {
+        const qScan = await dbClient.send(new ScanCommand({
+          TableName: WORKSPACE_QUOTATIONS_TABLE,
+          FilterExpression: 'quotationId = :qid OR customQuoteId = :qid',
+          ExpressionAttributeValues: marshall({ ':qid': purchaseOrder.quotationId })
+        }));
+        const quotation = qScan.Items?.length ? unmarshall(qScan.Items[0]) : null;
+
+        if (quotation?.clientPOFile) {
+          const checkPassed = quotation?.poAutoCheck?.passed === true;
+          const reasonApproved = quotation?.poAutoCheck?.reason?.status === 'approved';
+          if (!checkPassed && !reasonApproved) {
+            return res.status(400).json({
+              success: false,
+              message:
+                'This PO is based on a client-uploaded PO. The auto-check must pass, or a reason for the discrepancies must be submitted and approved, before sending to the vendor.',
+              poAutoCheck: quotation?.poAutoCheck || null
+            });
+          }
+        }
+      } catch (checkErr) {
+        console.warn('⚠️ Could not verify auto-check status, blocking send-to-vendor:', checkErr.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Unable to verify PO auto-check status. Please retry.'
+        });
+      }
+    }
+
     // Update PO status and add PM review details
     const updateParams = {
       TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
@@ -2972,314 +3119,6 @@ const vendorRespondToPurchaseOrder = async (req, res) => {
   }
 };
 
-/**
- * PM Approves Vendor Response and Readies for Finance
- * @route PUT /api/workspace/purchase-orders/:poId/pm-approve-vendor-response
- * @access Private (PM only)
- */
-const pmApproveVendorResponse = async (req, res) => {
-  try {
-    const { poId } = req.params;
-    const userRole = req.user?.role;
-    const pmId = req.user?.id;
-
-    if (userRole !== 'pm') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only PMs can approve vendor responses'
-      });
-    }
-
-    if (!poId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Purchase Order ID is required'
-      });
-    }
-
-    // Find the PO
-    const scanParams = {
-      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'purchaseOrderId = :poId',
-      ExpressionAttributeValues: marshall({
-        ':poId': poId
-      })
-    };
-
-    const result = await dbClient.send(new ScanCommand(scanParams));
-
-    if (!result.Items || result.Items.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Purchase order not found'
-      });
-    }
-
-    const purchaseOrder = unmarshall(result.Items[0]);
-
-    // Update PO status to ready_for_finance
-    const updateParams = {
-      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      Key: marshall({
-        purchaseOrderId: poId,
-        vendorId: purchaseOrder.vendorId
-      }),
-      UpdateExpression: 'SET #status = :status, #pmApprovedAt = :pmApprovedAt, #updatedAt = :updatedAt',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-        '#pmApprovedAt': 'pmApprovedAt',
-        '#updatedAt': 'updatedAt'
-      },
-      ExpressionAttributeValues: marshall({
-        ':status': 'ready_for_finance',
-        ':pmApprovedAt': new Date().toISOString(),
-        ':updatedAt': new Date().toISOString()
-      }),
-      ReturnValues: 'ALL_NEW'
-    };
-
-    const updateResult = await dbClient.send(new UpdateItemCommand(updateParams));
-    const updatedPO = unmarshall(updateResult.Attributes);
-
-    console.log(`✅ PM ${pmId} approved vendor response for PO ${poId}`);
-
-    res.status(200).json({
-      success: true,
-      data: updatedPO,
-      message: 'Vendor response approved, PO ready for finance'
-    });
-
-  } catch (error) {
-    console.error('❌ Error approving vendor response:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to approve vendor response',
-      error: error.message
-    });
-  }
-};
-
-/**
- * PM Sends Approved PO to Finance
- * @route PUT /api/workspace/purchase-orders/:poId/send-to-finance
- * @access Private (PM only)
- */
-const sendPurchaseOrderToFinance = async (req, res) => {
-  try {
-    const { poId } = req.params;
-    const userRole = req.user?.role;
-    const pmId = req.user?.id;
-
-    if (userRole !== 'pm') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only PMs can send purchase orders to finance'
-      });
-    }
-
-    if (!poId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Purchase Order ID is required'
-      });
-    }
-
-    // Find the PO
-    const scanParams = {
-      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'purchaseOrderId = :poId',
-      ExpressionAttributeValues: marshall({
-        ':poId': poId
-      })
-    };
-
-    const result = await dbClient.send(new ScanCommand(scanParams));
-
-    if (!result.Items || result.Items.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Purchase order not found'
-      });
-    }
-
-    const purchaseOrder = unmarshall(result.Items[0]);
-
-    // Update PO status to sent_to_finance_for_commission
-    const updateParams = {
-      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      Key: marshall({
-        purchaseOrderId: poId,
-        vendorId: purchaseOrder.vendorId
-      }),
-      UpdateExpression: 'SET #status = :status, #sentToFinanceAt = :sentToFinanceAt, #updatedAt = :updatedAt',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-        '#sentToFinanceAt': 'sentToFinanceAt',
-        '#updatedAt': 'updatedAt'
-      },
-      ExpressionAttributeValues: marshall({
-        ':status': 'sent_to_finance_for_commission',
-        ':sentToFinanceAt': new Date().toISOString(),
-        ':updatedAt': new Date().toISOString()
-      }),
-      ReturnValues: 'ALL_NEW'
-    };
-
-    const updateResult = await dbClient.send(new UpdateItemCommand(updateParams));
-    const updatedPO = unmarshall(updateResult.Attributes);
-
-    console.log(`✅ PO ${poId} sent to finance by PM ${pmId}`);
-
-    res.status(200).json({
-      success: true,
-      data: updatedPO,
-      message: 'Purchase order sent to finance successfully'
-    });
-
-  } catch (error) {
-    console.error('❌ Error sending purchase order to finance:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to send purchase order to finance',
-      error: error.message
-    });
-  }
-};
-
-/**
- * Finance Adds Commission and Approves PO
- * @route PUT /api/workspace/purchase-orders/:poId/finance-approval
- * @access Private (Finance only)
- */
-const financeApprovePurchaseOrder = async (req, res) => {
-  try {
-    const { poId } = req.params;
-    const { vendorId, commissionAmount, commissionPercentage, remarks } = req.body;
-    const userRole = req.user?.role;
-    const financeId = req.user?.id;
-
-    if (userRole !== 'finance') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only finance team can approve purchase orders'
-      });
-    }
-
-    if (!poId || !vendorId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Purchase Order ID and Vendor ID are required'
-      });
-    }
-
-    // Find the PO
-    const scanParams = {
-      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'purchaseOrderId = :poId',
-      ExpressionAttributeValues: marshall({
-        ':poId': poId
-      })
-    };
-
-    const result = await dbClient.send(new ScanCommand(scanParams));
-
-    if (!result.Items || result.Items.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Purchase order not found'
-      });
-    }
-
-    const purchaseOrder = unmarshall(result.Items[0]);
-
-    // Calculate new total with commission
-    const poSubtotal = purchaseOrder.subtotal || 0;
-    const finalCommission = commissionAmount || (poSubtotal * (commissionPercentage || 0) / 100);
-    const finalTotal = poSubtotal + finalCommission;
-
-    // Update PO with finance approval and commission
-    const updateParams = {
-      TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      Key: marshall({
-        purchaseOrderId: poId,
-        vendorId: purchaseOrder.vendorId
-      }),
-      UpdateExpression: 'SET #status = :status, #financeApproval = :financeApproval, #commission = :commission, #total = :total, #approvedAt = :approvedAt, #updatedAt = :updatedAt',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-        '#financeApproval': 'financeApproval',
-        '#commission': 'commission',
-        '#total': 'total',
-        '#approvedAt': 'approvedAt',
-        '#updatedAt': 'updatedAt'
-      },
-      ExpressionAttributeValues: marshall({
-        ':status': 'approved_by_finance',
-        ':financeApproval': {
-          financeId,
-          commissionAmount: finalCommission,
-          commissionPercentage: commissionPercentage || 0,
-          remarks: remarks || '',
-          approvedAt: new Date().toISOString()
-        },
-        ':commission': finalCommission,
-        ':total': finalTotal,
-        ':approvedAt': new Date().toISOString(),
-        ':updatedAt': new Date().toISOString()
-      }),
-      ReturnValues: 'ALL_NEW'
-    };
-
-    const updateResult = await dbClient.send(new UpdateItemCommand(updateParams));
-    const updatedPO = unmarshall(updateResult.Attributes);
-
-    // Also update the linked quotation status if quotationId exists
-    if (purchaseOrder.quotationId) {
-      try {
-        const quoteUpdateParams = {
-          TableName: WORKSPACE_QUOTATIONS_TABLE,
-          Key: marshall({
-            quotationId: purchaseOrder.quotationId,
-            vendorId: purchaseOrder.vendorId
-          }),
-          UpdateExpression: 'SET #status = :status, #poApprovedAt = :poApprovedAt, #updatedAt = :updatedAt',
-          ExpressionAttributeNames: {
-            '#status': 'status',
-            '#poApprovedAt': 'poApprovedAt',
-            '#updatedAt': 'updatedAt'
-          },
-          ExpressionAttributeValues: marshall({
-            ':status': 'po_approved_by_finance',
-            ':poApprovedAt': new Date().toISOString(),
-            ':updatedAt': new Date().toISOString()
-          })
-        };
-
-        await dbClient.send(new UpdateItemCommand(quoteUpdateParams));
-        console.log(`✅ Updated linked quotation ${purchaseOrder.quotationId} to po_approved_by_finance`);
-      } catch (quoteError) {
-        console.warn('⚠️ Failed to update linked quotation status:', quoteError);
-        // Don't fail the PO approval if quotation update fails
-      }
-    }
-
-    console.log(`✅ PO ${poId} approved by finance ${financeId} with commission ${finalCommission}`);
-
-    res.status(200).json({
-      success: true,
-      data: updatedPO,
-      message: 'Purchase order approved by finance successfully'
-    });
-
-  } catch (error) {
-    console.error('❌ Error approving purchase order by finance:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to approve purchase order',
-      error: error.message
-    });
-  }
-};
 
 /**
  * Get PO status for a specific quotation
@@ -3447,6 +3286,80 @@ const savePmPOFile = async (req, res) => {
 
     await dbClient.send(new PutItemCommand(updateParams));
 
+    // Materialise the workspace_purchase_orders row for this PM-generated PO.
+    // The PO document carries the vendor's ORIGINAL rates (finance commission
+    // stripped out) and is what PM sends to the vendor for confirmation.
+    // Upsert by quotationId so re-generating the PM PO doesn't create
+    // duplicate PO rows.
+    let purchaseOrderId = null;
+    try {
+      const existingPoScan = await dbClient.send(new ScanCommand({
+        TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
+        FilterExpression: 'quotationId = :qid',
+        ExpressionAttributeValues: marshall({ ':qid': quotationId })
+      }));
+
+      const existingPo = existingPoScan.Items && existingPoScan.Items.length
+        ? unmarshall(existingPoScan.Items[0])
+        : null;
+
+      purchaseOrderId = existingPo?.purchaseOrderId || `PO-${Date.now()}-${uuidv4().slice(0, 8)}`;
+
+      const projectContext = await getProjectContextForWorkspace(quotation.workspaceId);
+      const nowIso = new Date().toISOString();
+
+      const purchaseOrder = {
+        purchaseOrderId,
+        purchaseOrderNumber: `PMPO-${quotation.customQuoteId || quotation.quotationId || quotationId}`,
+        referenceQuoteNumber:
+          quotation.customQuoteId || quotation.quoteNumber || quotation.quotationId || null,
+        vendorId: quotation.vendorId,
+        clientId: quotation.clientId || projectContext?.clientId || null,
+        customerName: customerName || quotation.customerName || '',
+        customerDetails: quotation.customerDetails || {},
+        quotationId,
+        purchaseOrderDate: nowIso.split('T')[0],
+        items: items || quotation.items || [],
+        subtotal: subtotal ?? quotation.subtotal ?? 0,
+        cgst: quotation.cgst ?? 0,
+        sgst: quotation.sgst ?? 0,
+        igst: quotation.igst ?? 0,
+        gst: gst ?? 0,
+        total: total ?? quotation.total ?? 0,
+        commissionRemoved: commissionRemoved || 0,
+        status: 'pm_po_created',
+        statusType: 'pending',
+        workspaceId: quotation.workspaceId || null,
+        workspaceName: quotation.workspaceName || '',
+        projectId: projectContext?.projectId || quotation.projectId || null,
+        projectName: quotation.projectName || '',
+        taskId: quotation.taskId || null,
+        taskName: quotation.taskName || '',
+        subtaskId: quotation.subtaskId || null,
+        subtaskName: quotation.subtaskName || '',
+        pdfUrl: pmPoUrl,
+        poPdfUrl: pmPoUrl,
+        sourceType: 'pm_po',
+        // Whether this PO must pass the client-PO auto-check before it can be
+        // sent to the vendor (only for client-uploaded PO files)
+        requiresAutoCheck: Boolean(quotation.clientPOFile),
+        clientPOFile: quotation.clientPOFile || null,
+        poAutoCheck: quotation.poAutoCheck || null,
+        createdAt: existingPo?.createdAt || nowIso,
+        updatedAt: nowIso
+      };
+
+      await dbClient.send(new PutItemCommand({
+        TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
+        Item: marshall(purchaseOrder, { removeUndefinedValues: true })
+      }));
+
+      console.log(`✅ Purchase order ${purchaseOrderId} materialised for PM PO (quotation ${quotationId})`);
+    } catch (poError) {
+      // Don't fail the whole request — the pmPOFile is already saved on the quotation
+      console.error('⚠️ Failed to materialise purchase order for PM PO:', poError.message);
+    }
+
     console.log(`✅ PM PO file saved for quotation ${quotationId}`);
 
     res.status(200).json({
@@ -3454,6 +3367,7 @@ const savePmPOFile = async (req, res) => {
       message: 'PM PO file generated and saved successfully',
       data: {
         quotationId,
+        purchaseOrderId,
         pmPOFile: pmPoUrl,
         pmPOFileName: updatedQuotation.pmPOFileName,
         status: 'pm_approved_po',
@@ -3609,9 +3523,6 @@ export {
   reviewPurchaseOrder,
   sendPurchaseOrderToVendor,
   vendorRespondToPurchaseOrder,
-  pmApproveVendorResponse,
-  sendPurchaseOrderToFinance,
-  financeApprovePurchaseOrder,
   getPOStatusByQuotation,
 
   // Credit Notes

@@ -27,9 +27,6 @@ import {
   reviewPurchaseOrder,
   sendPurchaseOrderToVendor,
   vendorRespondToPurchaseOrder,
-  pmApproveVendorResponse,
-  sendPurchaseOrderToFinance,
-  financeApprovePurchaseOrder,
   getPOStatusByQuotation,
   updateProgress,
   approveProgress,
@@ -44,7 +41,8 @@ import {
 } from '../controllers/workspaceController.js';
 import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus } from '../controllers/workspaceInvoicesController.js';
 import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats, updateCreditNoteRequestStatus } from '../controllers/workspaceCreditNotesController.js';
-import { getWorkspacePurchaseOrders, vendorApprovePurchaseOrder } from '../controllers/workspacePurchaseOrdersController.js';
+import { getWorkspacePurchaseOrders } from '../controllers/workspacePurchaseOrdersController.js';
+import { autoCheckClientPO, submitPoCheckReason, forwardPoCheckReason } from '../controllers/poAutoCheckController.js';
 import { getWorkspaceSubscriptions, getSubscriptionStats, createSubscription, updateSubscription, deleteSubscription, pauseSubscription, resumeSubscription, getSubscriptionHistory, generateSubscriptionInvoice, bulkPauseSubscriptions, bulkResumeSubscriptions } from '../controllers/workspaceSubscriptionsController.js';
 import purchaseRequisitionsRouter from './purchaseRequisitionsRoutes.js';
 import procurementRequestsRouter from './procurementRequestsRoutes.js';
@@ -173,6 +171,27 @@ router.get('/quotations/:quotationId/po-status', authenticateUser, getPOStatusBy
 router.post('/quotations/:quotationId/pm-po-file', authenticateUser, requirePM, savePmPOFile);
 
 /**
+ * @route   POST /api/workspace/quotations/:quotationId/auto-check-po
+ * @desc    Auto-check client-uploaded PO against the sent quotation (items, rates, GST, total)
+ * @access  Private (PM only)
+ */
+router.post('/quotations/:quotationId/auto-check-po', authenticateUser, requirePM, autoCheckClientPO);
+
+/**
+ * @route   POST /api/workspace/quotations/:quotationId/po-check-reason
+ * @desc    PM submits a reason for auto-check discrepancies (finance approves it)
+ * @access  Private (PM only)
+ */
+router.post('/quotations/:quotationId/po-check-reason', authenticateUser, requirePM, submitPoCheckReason);
+
+/**
+ * @route   POST /api/workspace/quotations/:quotationId/po-check-reason/forward
+ * @desc    PM forwards a client-submitted reason to finance for approval
+ * @access  Private (PM only)
+ */
+router.post('/quotations/:quotationId/po-check-reason/forward', authenticateUser, requirePM, forwardPoCheckReason);
+
+/**
  * @route   PUT /api/workspace/quotations/:quotationId
  * @desc    Update quotation (Vendor only)
  * @access  Private
@@ -276,13 +295,6 @@ router.post('/purchase-orders', requireVendor, createPurchaseOrderFromQuote);
 router.get('/purchase-orders', getWorkspacePurchaseOrders);
 
 /**
- * @route   POST /api/workspace/purchase-orders/:poId/vendor-approve
- * @desc    Vendor approves a PO from PM and sends to PM for further review
- * @access  Private (Vendor only)
- */
-router.post('/purchase-orders/:poId/vendor-approve', vendorApprovePurchaseOrder);
-
-/**
  * @route   GET /api/workspace/purchase-orders/:poId/review
  * @desc    PM reviews PO details with commission breakdown
  * @access  Private (PM only)
@@ -291,38 +303,17 @@ router.get('/purchase-orders/:poId/review', requirePM, reviewPurchaseOrder);
 
 /**
  * @route   PUT /api/workspace/purchase-orders/:poId/send-to-vendor
- * @desc    PM removes commission and sends PO to vendor
+ * @desc    PM sends the commission-stripped PO to the vendor for confirmation
  * @access  Private (PM only)
  */
 router.put('/purchase-orders/:poId/send-to-vendor', authenticateUser, requirePM, sendPurchaseOrderToVendor);
 
 /**
  * @route   PATCH /api/workspace/purchase-orders/:poId/vendor-response
- * @desc    Vendor accepts or rejects PO
+ * @desc    Vendor accepts or rejects PO — this completes the PO flow
  * @access  Private (Vendor only)
  */
 router.patch('/purchase-orders/:poId/vendor-response', authenticateUser, requireVendor, vendorRespondToPurchaseOrder);
-
-/**
- * @route   PUT /api/workspace/purchase-orders/:poId/pm-approve-vendor-response
- * @desc    PM approves vendor response and readies for finance
- * @access  Private (PM only)
- */
-router.put('/purchase-orders/:poId/pm-approve-vendor-response', authenticateUser, requirePM, pmApproveVendorResponse);
-
-/**
- * @route   PUT /api/workspace/purchase-orders/:poId/send-to-finance
- * @desc    PM sends approved PO to Finance
- * @access  Private (PM only)
- */
-router.put('/purchase-orders/:poId/send-to-finance', authenticateUser, requirePM, sendPurchaseOrderToFinance);
-
-/**
- * @route   PUT /api/workspace/purchase-orders/:poId/finance-approval
- * @desc    Finance adds commission and approves PO
- * @access  Private (Finance only)
- */
-router.put('/purchase-orders/:poId/finance-approval', authenticateUser, financeApprovePurchaseOrder);
 
 /**
  * ========================================

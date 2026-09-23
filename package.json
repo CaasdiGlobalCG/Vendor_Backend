@@ -51,10 +51,13 @@
     "nodemailer": "^9.0.5",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "pdf-parse": "^2.4.5",
+    "pdf-to-img": "^7.0.0",
     "pdfkit": "^0.17.2",
     "puppeteer": "^25.9.0",
     "qrcode": "^1.5.4",
     "speakeasy": "^2.0.0",
+    "tesseract.js": "^7.0.0",
     "uuid": "^11.1.0",
     "ws": "^8.18.2"
   }
