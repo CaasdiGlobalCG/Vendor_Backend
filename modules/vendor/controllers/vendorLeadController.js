@@ -6,6 +6,16 @@ import * as DynamoWorkspace from '../../workspace/models/DynamoWorkspace.js';
 
 const LEAD_INVITATIONS_TABLE = 'lead_invitations_table';
 
+// Vendor may submit/resubmit BOQ + quotation only when the lead is awaiting
+// their response: freshly sent, sent back by PM for revision, or when the PM
+// rejected their vendor-BOQ quotation. Blocked while pending PM review
+// (vendor_accepted) and after a final decision (pm_approved / pm_rejected /
+// vendor_declined).
+const canVendorSubmitToLead = (lead) =>
+  !lead.status ||
+  ['sent', 'pm_rejected_for_revision'].includes(lead.status) ||
+  lead.vendorQuotationApprovalStatus === 'rejected';
+
 // Vendor: Get all leads received by vendor
 export const getVendorLeads = async (req, res) => {
   try {
@@ -137,7 +147,7 @@ export const getVendorLeads = async (req, res) => {
 export const getVendorLead = async (req, res) => {
   try {
     const { leadId } = req.params;
-    const { vendorId } = req.body; // From vendor authentication
+    const vendorId = req.vendorId || req.body?.vendorId || req.query?.vendorId;
 
     console.log('📄 Getting vendor lead details:', { leadId, vendorId });
 
@@ -185,6 +195,12 @@ export const getVendorLead = async (req, res) => {
       tags: lead.tags || [],
       // Include BOQ attachment metadata for detailed views
       boqAttachment: lead.boqAttachment || null,
+      // Include vendor submission state so the UI can lock re-submission
+      pdfUrl: lead.pdfUrl || null,
+      vendorBoqAttachment: lead.vendorBoqAttachment || null,
+      vendorQuotationResponse: lead.vendorQuotationResponse || null,
+      vendorQuotationApprovalStatus: lead.vendorQuotationApprovalStatus || null,
+      vendorQuotationRejectionReason: lead.vendorQuotationRejectionReason || null,
       // Include negotiation tracking fields (NEW)
       rejectionReason: lead.rejectionReason || null,
       negotiationHistory: lead.negotiationHistory || [],
@@ -737,6 +753,14 @@ export const updateLeadQuotation = async (req, res) => {
       });
     }
 
+    // Block re-submission while pending PM review or after a final decision
+    if (!canVendorSubmitToLead(lead)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A quotation has already been submitted for this lead. You can submit again only if the PM sends it back for revision.'
+      });
+    }
+
     const now = new Date().toISOString();
 
     // Update lead_invitations table with pdfUrl, status=vendor_accepted, and vendorResponse
@@ -820,6 +844,14 @@ export const uploadVendorBoq = async (req, res) => {
       return res.status(403).json({
         success: false,
         error: 'Access denied to this lead'
+      });
+    }
+
+    // Block re-submission while pending PM review or after a final decision
+    if (!canVendorSubmitToLead(lead)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A quotation has already been submitted for this lead. You can upload again only if the PM sends it back for revision.'
       });
     }
 
@@ -910,6 +942,14 @@ export const uploadVendorQuotation = async (req, res) => {
       });
     }
 
+    // Block re-submission while pending PM review or after a final decision
+    if (!canVendorSubmitToLead(lead)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A quotation has already been submitted for this lead. You can submit again only if the PM sends it back for revision.'
+      });
+    }
+
     const now = new Date().toISOString();
 
     // Store vendor quotation in vendor_quotes_to_pm table
@@ -945,11 +985,13 @@ export const uploadVendorQuotation = async (req, res) => {
     const leadUpdateParams = {
       TableName: LEAD_INVITATIONS_TABLE,
       Key: { leadId },
-      UpdateExpression: 'SET vendorQuotationResponse = :vendorQuotationResponse, #status = :status, vendorResponse = :vendorResponse, updatedAt = :now',
+      UpdateExpression: 'SET vendorQuotationResponse = :vendorQuotationResponse, #status = :status, vendorResponse = :vendorResponse, vendorQuotationApprovalStatus = :approvalStatus, vendorQuotationRejectionReason = :rejectionReason, updatedAt = :now',
       ExpressionAttributeNames: {
         '#status': 'status'
       },
       ExpressionAttributeValues: {
+        ':approvalStatus': null,
+        ':rejectionReason': null,
         ':vendorQuotationResponse': {
           vendorBoqUrl,
           quotationUrl: vendorQuotationUrl,

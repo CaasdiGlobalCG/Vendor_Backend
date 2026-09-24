@@ -1,6 +1,7 @@
 import * as DynamoWorkspace from '../models/DynamoWorkspace.js';
 import ActivityTracker from '../../../utils/activityTracker.js';
-import { dynamoDB } from '../../../config/aws.js';
+import { dynamoDB, WORKSPACES_TABLE } from '../../../config/aws.js';
+import { notifyVendorOfNewLead } from '../../../websocket/notificationSocket.js';
 import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
 import * as WorkflowScheduler from '../../workflow/services/workflowScheduler.js';
 
@@ -639,7 +640,7 @@ export const updateTaskInWorkspace = async (req, res) => {
 export const updateSubtaskInTask = async (req, res) => {
   try {
     const { id, taskId, subtaskId } = req.params;
-    const { name, description, priority, assignedUserId } = req.body;
+    const { name, description, priority, assignedUserId, dependsOnSubtaskIds } = req.body;
 
     const workspace = await DynamoWorkspace.getWorkspaceById(id);
     if (!workspace) {
@@ -667,11 +668,29 @@ export const updateSubtaskInTask = async (req, res) => {
         ? (existingSubtask.assignedUserIds || [])
         : (assignedUserId ? [assignedUserId] : []);
 
+    // Dependency update: an explicit array replaces dependsOnSubtaskIds
+    // ([] clears the dependency). Invalid/self/dependency-cycle ids are dropped.
+    let dependencyPatch = {};
+    if (Array.isArray(dependsOnSubtaskIds)) {
+      const subtaskIds = new Set(subtasks.map((s) => s.id));
+      const dependents = new Set(
+        subtasks
+          .filter((s) => (s.dependsOnSubtaskIds || []).includes(subtaskId))
+          .map((s) => s.id)
+      );
+      dependencyPatch = {
+        dependsOnSubtaskIds: dependsOnSubtaskIds.filter(
+          (depId) => depId && depId !== subtaskId && subtaskIds.has(depId) && !dependents.has(depId)
+        ),
+      };
+    }
+
     updatedSubtasks[subtaskIndex] = {
       ...existingSubtask,
       ...(name !== undefined ? { name } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(priority !== undefined ? { priority } : {}),
+      ...dependencyPatch,
       assignedUserIds,
       assignedUsers: assignedUserIds.length,
       updatedAt: new Date().toISOString(),
@@ -1128,10 +1147,204 @@ export const updateWorkspacePermissions = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error updating workspace permissions:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to update permissions', 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update permissions',
+      error: error.message
+    });
+  }
+};
+
+const WORKSPACE_PERMISSION_KEYS = [
+  'canEdit', 'canComment', 'canViewFiles', 'canCreateTasks', 'canAssignTasks',
+  'canUpdateTaskStatus', 'canAddNotes', 'canApproveElements',
+  'canAccessMessages', 'canAccessVideoCall'
+];
+
+// PM: Invite vendors to collaborate on an existing workspace.
+// Grants each selected vendor collaborator access scoped by the PM-chosen
+// permissions, and creates a lead invitation per vendor so the invite
+// surfaces in their leads/projects views with workspace access.
+export const inviteVendorsToWorkspace = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const { vendors, permissions = {} } = req.body;
+
+    console.log('👥 Inviting vendors to workspace:', {
+      workspaceId,
+      vendorCount: vendors?.length,
+      permissions
+    });
+
+    if (!Array.isArray(vendors) || vendors.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one vendor is required'
+      });
+    }
+
+    const workspace = await DynamoWorkspace.getWorkspaceById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({
+        success: false,
+        message: 'Workspace not found'
+      });
+    }
+
+    const now = new Date().toISOString();
+    const invitedBy = req.vendorId || req.auth?.sub || req.auth?.email || 'pm';
+    const resolvedWorkspaceId = workspace.workspaceId || workspaceId;
+
+    const accessControl = workspace.accessControl || {};
+    const existingCollaborators = accessControl.collaborators || [];
+    const existingSharedWith = workspace.sharedWith || [];
+    const existingVendorCollaborators = workspace.vendorCollaborators || [];
+
+    // Skip vendors who already have collaborator access
+    const newVendors = vendors.filter(
+      v => v?.vendorId && !existingCollaborators.includes(v.vendorId)
+    );
+
+    if (newVendors.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'All selected vendors are already collaborators'
+      });
+    }
+
+    const newVendorIds = newVendors.map(v => v.vendorId);
+    const grantedKeys = WORKSPACE_PERMISSION_KEYS.filter(key => permissions[key]);
+
+    // Merge granted permission keys with the invited vendor IDs
+    const updatedPermissions = { ...(accessControl.permissions || {}) };
+    for (const key of grantedKeys) {
+      const current = Array.isArray(updatedPermissions[key]) ? updatedPermissions[key] : [];
+      updatedPermissions[key] = [...new Set([...current, ...newVendorIds])];
+    }
+
+    const updatedAccessControl = {
+      ...accessControl,
+      collaborators: [...new Set([...existingCollaborators, ...newVendorIds])],
+      permissions: updatedPermissions
+    };
+
+    const newVendorCollaborators = newVendors.map(v => ({
+      vendorId: v.vendorId,
+      name: v.name || 'Vendor',
+      email: v.email || '',
+      companyName: v.companyName || '',
+      permissions: grantedKeys,
+      status: 'active',
+      invitedBy,
+      invitedAt: now,
+      lastActivity: { timestamp: now, action: 'invited' }
+    }));
+
+    const updateResult = await dynamoDB.update({
+      TableName: WORKSPACES_TABLE,
+      Key: { workspaceId: resolvedWorkspaceId },
+      UpdateExpression: 'SET accessControl = :accessControl, sharedWith = :sharedWith, vendorCollaborators = :vendorCollaborators, updatedAt = :updatedAt',
+      ExpressionAttributeValues: {
+        ':accessControl': updatedAccessControl,
+        ':sharedWith': [...new Set([...existingSharedWith, ...newVendorIds])],
+        ':vendorCollaborators': [...existingVendorCollaborators, ...newVendorCollaborators],
+        ':updatedAt': now
+      },
+      ReturnValues: 'ALL_NEW'
+    }).promise();
+
+    // Create a lead invitation per vendor so the invite surfaces in their
+    // leads/projects views. Pre-approved — the PM invite IS the grant, so
+    // workspace access is immediate (scoped by the chosen permissions).
+    const pmId = accessControl.owner || workspace.vendorId || null;
+    const projectId = workspace.projectId || workspace.projectMetadata?.projectId || null;
+
+    const invited = [];
+    for (const vendor of newVendors) {
+      try {
+        const leadId = `LEAD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+        await dynamoDB.put({
+          TableName: 'lead_invitations_table',
+          Item: {
+            leadId,
+            projectId,
+            pmId,
+            vendorId: vendor.vendorId,
+            leadTitle: `Workspace invitation: ${workspace.title || 'Untitled workspace'}`,
+            leadDescription: `You have been invited to collaborate on the workspace "${workspace.title || 'Untitled workspace'}".`,
+            specialization: vendor.specialization || '',
+            estimatedBudget: 'TBD',
+            estimatedTimeline: 'TBD',
+            status: 'pm_approved',
+            vendorResponse: null,
+            pmDecision: {
+              approved: true,
+              workspaceAccess: true,
+              feedback: 'Invited to collaborate on the project workspace.',
+              decidedAt: now,
+              decidedBy: invitedBy
+            },
+            invitationType: 'workspace_collaboration',
+            workspaceId: resolvedWorkspaceId,
+            sentAt: now,
+            updatedAt: now,
+            priority: 'medium',
+            tags: ['workspace-invite'],
+            vendorDetails: {
+              name: vendor.name || 'Vendor',
+              email: vendor.email || '',
+              companyName: vendor.companyName || '',
+              specialization: vendor.specialization || ''
+            },
+            projectDetails: {
+              name: workspace.title || 'Project Workspace',
+              location: workspace.projectMetadata?.location || '',
+              category: workspace.projectMetadata?.category || 'General'
+            }
+          }
+        }).promise();
+
+        invited.push({ leadId, vendorId: vendor.vendorId, vendorName: vendor.name });
+
+        try {
+          notifyVendorOfNewLead(vendor.vendorId, {
+            leadId,
+            projectId,
+            pmId,
+            pmName: 'Project Manager',
+            leadTitle: `Workspace invitation: ${workspace.title || 'Untitled workspace'}`,
+            specialization: vendor.specialization || '',
+            estimatedBudget: 'TBD',
+            estimatedTimeline: 'TBD',
+            priority: 'medium',
+            workspaceId: resolvedWorkspaceId,
+            invitationType: 'workspace_collaboration'
+          });
+        } catch (notifyError) {
+          console.error(`⚠️ Failed to notify vendor ${vendor.vendorId}:`, notifyError?.message || notifyError);
+        }
+      } catch (leadError) {
+        console.error(`⚠️ Failed to create workspace invite lead for ${vendor.vendorId}:`, leadError?.message || leadError);
+      }
+    }
+
+    console.log(`✅ Invited ${invited.length} vendor(s) to workspace ${resolvedWorkspaceId}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Successfully invited ${invited.length} vendor${invited.length !== 1 ? 's' : ''} to the workspace`,
+      invited,
+      permissions: grantedKeys,
+      workspace: updateResult.Attributes
+    });
+
+  } catch (error) {
+    console.error('❌ Error inviting vendors to workspace:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to invite vendors',
+      error: error.message
     });
   }
 };

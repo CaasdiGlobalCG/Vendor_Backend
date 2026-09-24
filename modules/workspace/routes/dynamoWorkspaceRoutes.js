@@ -80,6 +80,9 @@ router.put('/workspaces/:id/share', requirePermission('workspace', 'edit'), dyna
 // Invite CAS members to workspace
 router.post('/workspaces/:workspaceId/invite-cas', requirePermission('workspace', 'edit'), inviteCASMembersToWorkspace);
 
+// Invite vendors to collaborate on workspace (permission-scoped access)
+router.post('/workspaces/:workspaceId/invite-vendors', requirePermission('workspace', 'edit'), dynamoWorkspaceController.inviteVendorsToWorkspace);
+
 // Get workspaces where user is a CAS collaborator
 router.get('/cas-member/:userId/workspaces', requirePermission('workspace', 'view'), async (req, res) => {
   try {
