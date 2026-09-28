@@ -463,6 +463,115 @@ router.post('/kyc-update-request', authenticateCognitoJwt, async (req, res) => {
   }
 });
 
+// ── Additional document requests (auditor → vendor) ──────────────────────
+// The auditor can ask for extra documents outside the fixed KYC sections.
+// The vendor sees the checklist on their verification-status page and uploads
+// each file; files land under vendor-kyc/{vendorId}/additional-docs/ so the
+// auditor's presigned-URL endpoint can open them.
+
+const additionalDocsUpload = upload.single('file');
+const ADDITIONAL_DOCS_ACCEPTED = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+]);
+
+// GET /api/vendor/additional-docs — current request state for this vendor
+router.get('/additional-docs', authenticateCognitoJwt, async (req, res) => {
+  try {
+    const rawEmail = req.auth?.email;
+    if (!rawEmail) {
+      return res.status(401).json({ success: false, message: 'Not authenticated' });
+    }
+    const email = String(rawEmail).trim().toLowerCase();
+    const vendor = await DynamoVendor.getVendorByEmail(email);
+    if (!vendor) {
+      return res.status(404).json({ success: false, message: 'Vendor not found' });
+    }
+    return res.json({ success: true, data: { additionalDocRequest: vendor.additionalDocRequest || null } });
+  } catch (error) {
+    console.error('Error fetching additional docs request:', error);
+    return res.status(500).json({ success: false, message: 'Error fetching document request', error: error.message });
+  }
+});
+
+// POST /api/vendor/additional-docs/:docId — upload the file for one requested item
+router.post('/additional-docs/:docId', authenticateCognitoJwt, (req, res) => {
+  additionalDocsUpload(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ success: false, message: uploadErr.message || 'File upload failed' });
+    }
+    try {
+      const rawEmail = req.auth?.email;
+      if (!rawEmail) {
+        return res.status(401).json({ success: false, message: 'Not authenticated' });
+      }
+      const email = String(rawEmail).trim().toLowerCase();
+      const vendor = await DynamoVendor.getVendorByEmail(email);
+      if (!vendor) {
+        return res.status(404).json({ success: false, message: 'Vendor not found' });
+      }
+
+      const docRequest = vendor.additionalDocRequest;
+      const items = Array.isArray(docRequest?.documents) ? docRequest.documents : [];
+      const item = items.find((d) => d.id === req.params.docId);
+      if (!item) {
+        return res.status(404).json({ success: false, message: 'Requested document not found' });
+      }
+      if (docRequest.status !== 'pending') {
+        return res.status(409).json({ success: false, message: 'This document request is no longer open' });
+      }
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'file is required' });
+      }
+      if (!ADDITIONAL_DOCS_ACCEPTED.has(req.file.mimetype)) {
+        return res.status(400).json({ success: false, message: 'Only PDF, JPG, PNG, DOC or DOCX files are allowed' });
+      }
+      if (req.file.size > 15 * 1024 * 1024) {
+        return res.status(400).json({ success: false, message: 'File exceeds the 15 MB limit' });
+      }
+
+      const vendorId = vendor.vendorId || vendor.id;
+      const folder = `vendor-kyc/${vendorId}/additional-docs`;
+      const url = await uploadFileToS3(req.file.buffer, req.file.originalname, req.file.mimetype, folder);
+      const s3Key = url.split('.amazonaws.com/')[1] || null;
+
+      item.status = 'submitted';
+      item.file = {
+        name: req.file.originalname,
+        url,
+        s3Key,
+        size: req.file.size,
+        type: req.file.mimetype,
+        uploadedAt: new Date().toISOString(),
+      };
+
+      const allSubmitted = items.every((d) => d.status === 'submitted');
+      const nextRequest = {
+        ...docRequest,
+        documents: items,
+        status: allSubmitted ? 'submitted' : 'pending',
+        submittedAt: allSubmitted ? new Date().toISOString() : docRequest.submittedAt || null,
+      };
+
+      await DynamoVendor.updateVendor(vendor.id, { additionalDocRequest: nextRequest });
+
+      return res.json({
+        success: true,
+        data: { item, allSubmitted, additionalDocRequest: nextRequest },
+        message: allSubmitted
+          ? 'All requested documents submitted. The auditor will continue verification.'
+          : 'Document uploaded',
+      });
+    } catch (error) {
+      console.error('Error uploading additional document:', error);
+      return res.status(500).json({ success: false, message: 'Error uploading document', error: error.message });
+    }
+  });
+});
+
 // Get vendor by ID (explicit endpoint)
 router.get('/vendor/:id', async (req, res) => {
   try {

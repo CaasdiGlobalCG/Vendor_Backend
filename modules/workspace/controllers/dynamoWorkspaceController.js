@@ -4,6 +4,31 @@ import { dynamoDB, WORKSPACES_TABLE } from '../../../config/aws.js';
 import { notifyVendorOfNewLead } from '../../../websocket/notificationSocket.js';
 import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
 import * as WorkflowScheduler from '../../workflow/services/workflowScheduler.js';
+import { uploadFileToS3 } from '../../../utils/s3Utils.js';
+
+// Persist a per-day canvas snapshot (JPEG data URL from the client) to S3 and
+// index it under workspace.dailySnapshots['YYYY-MM-DD']. Later saves on the same
+// day overwrite the index so the map always points to the end-of-day state.
+// Fire-and-forget — snapshot persistence must never fail a canvas save.
+const persistDailySnapshot = async (workspaceId, previewSnapshot, existingDailySnapshots = {}) => {
+  try {
+    const match = /^data:(image\/[\w+.-]+);base64,(.+)$/.exec(previewSnapshot || '');
+    if (!match) return;
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length) return;
+    const dateKey = new Date().toISOString().slice(0, 10);
+    const ext = match[1].includes('png') ? 'png' : 'jpg';
+    const url = await uploadFileToS3(buffer, `snapshot.${ext}`, match[1], `workspace-snapshots/${workspaceId}`);
+    await DynamoWorkspace.updateWorkspace(workspaceId, {
+      dailySnapshots: {
+        ...(existingDailySnapshots || {}),
+        [dateKey]: { url, capturedAt: new Date().toISOString() }
+      }
+    });
+  } catch (err) {
+    console.error('⚠️ Failed to persist daily workspace snapshot:', err.message);
+  }
+};
 
 const isCompletedStatus = (status) => {
   const normalized = String(status || '').trim().toLowerCase();
@@ -343,8 +368,13 @@ export const saveWorkspaceCanvas = async (req, res) => {
     });
 
     await triggerWorkflowEvents(workflowEvents, actionServices);
-    
-    res.status(200).json({ 
+
+    // Keep a per-day snapshot history for the progress timeline (non-blocking)
+    if (previewSnapshot) {
+      persistDailySnapshot(id, previewSnapshot, existingWorkspace.dailySnapshots);
+    }
+
+    res.status(200).json({
       message: 'Workspace canvas saved successfully',
       workspace: updatedWorkspace 
     });
@@ -830,7 +860,12 @@ export const updateSubtaskCanvas = async (req, res) => {
     };
     
     const updatedWorkspace = await DynamoWorkspace.updateWorkspace(id, workspaceUpdateData);
-    
+
+    // Keep a per-day snapshot history for the progress timeline (non-blocking)
+    if (previewSnapshot) {
+      persistDailySnapshot(id, previewSnapshot, workspace.dailySnapshots);
+    }
+
     console.log('✅ Backend: Subtask canvas updated successfully', {
       nodesCount: nodes?.length || 0,
       edgesCount: edges?.length || 0,

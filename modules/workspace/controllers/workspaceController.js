@@ -3559,7 +3559,7 @@ export {
 // Update project progress
 const updateProgress = async (req, res) => {
   try {
-    const { workspaceId, vendorId, title, description, workDone, workPending, projectId, taskId, subtaskId, reviewStatus } = req.body;
+    const { workspaceId, vendorId, title, description, workDone, workPending, projectId, taskId, subtaskId, reviewStatus, progressDate } = req.body;
     const proofOfCompletion = req.file;
 
     if (!workspaceId || !vendorId) {
@@ -3576,6 +3576,16 @@ const updateProgress = async (req, res) => {
       });
     }
 
+    // The calendar day the reported work was actually done (YYYY-MM-DD).
+    // Required — progress is tracked by work date, not just submit time.
+    const parsedDate = progressDate ? new Date(progressDate) : null;
+    if (!progressDate || isNaN(parsedDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid progress date is required'
+      });
+    }
+
     // Prepare progress data
     const progressData = {
       title,
@@ -3586,6 +3596,7 @@ const updateProgress = async (req, res) => {
       taskId: taskId || '',
       subtaskId: subtaskId || '',
       reviewStatus: reviewStatus || 'pending',
+      progressDate: parsedDate.toISOString().slice(0, 10),
       updatedAt: new Date().toISOString()
     };
 
