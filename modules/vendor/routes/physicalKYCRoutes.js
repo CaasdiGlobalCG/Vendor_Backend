@@ -116,7 +116,17 @@ router.put('/schedule/:vendorId/:scheduleId/status', authenticateCognitoJwt, asy
  */
 router.get('/vendor/status', authenticateCognitoJwt, async (req, res) => {
   try {
-    const vendorId = req.auth?.sub || req.query.vendorId;
+    // req.auth.sub is the Cognito user UUID — never a vendorId. Resolve the
+    // caller's own vendor record by email first (vendor portal); only callers
+    // without a vendor record (internal staff) may pass ?vendorId= explicitly.
+    let vendorId = null;
+    if (req.auth?.email) {
+      const vendor = await DynamoVendor.getVendorByEmail(
+        String(req.auth.email).trim().toLowerCase()
+      ).catch(() => null);
+      vendorId = vendor?.vendorId || vendor?.id || null;
+    }
+    if (!vendorId) vendorId = req.query.vendorId || req.auth?.sub || null;
     if (!vendorId) {
       return res.status(400).json({ success: false, message: 'vendorId required' });
     }
@@ -134,6 +144,11 @@ router.get('/vendor/status', authenticateCognitoJwt, async (req, res) => {
       data: { schedule, checklist, result: result || null },
     });
   } catch (error) {
+    // Missing physical-KYC tables (module not provisioned) is not a vendor-facing
+    // error — the vendor simply has no schedule yet.
+    if (error?.name === 'ResourceNotFoundException' || error?.code === 'ResourceNotFoundException') {
+      return res.status(200).json({ success: true, data: null });
+    }
     console.error('[Physical KYC] vendor/status error:', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
