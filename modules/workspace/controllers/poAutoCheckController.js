@@ -486,7 +486,10 @@ const autoCheckClientPO = async (req, res) => {
       extractedItemCount: poItems.length,
       extractionMethod,
       checkedAt: new Date().toISOString(),
-      checkedBy: req.user?.id || req.user?.userId || 'pm'
+      checkedBy: req.user?.id || req.user?.userId || 'pm',
+      // Keep any prior discrepancy reason — re-running the check must not
+      // wipe a finance-approved reason, or send-to-vendor will re-block.
+      ...(quotation.poAutoCheck?.reason && { reason: quotation.poAutoCheck.reason })
     };
 
     await dbClient.send(

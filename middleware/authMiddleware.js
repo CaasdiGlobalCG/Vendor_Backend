@@ -236,6 +236,40 @@ export const requirePM = (req, res, next) => {
 };
 
 /**
+ * Middleware: user must be finance or PM — commission-write actions
+ * (vendors are explicitly excluded; they never set commission fields)
+ */
+export const requireFinanceOrPM = (req, res, next) => {
+  const role = req.user?.role;
+  if (role === 'finance' || role === 'pm') {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: 'Access denied. Finance or PM role required.'
+  });
+};
+
+/**
+ * Middleware: any authenticated workspace actor — vendor, pm, cas, finance or
+ * client — may use the shared document-management routes (quotations,
+ * invoices, items, customers, subscriptions, credit notes, POs). Each actor's
+ * documents are scoped by their own id (stored in the vendorId field, which
+ * doubles as the partition/owner key); per-controller ownership/role checks
+ * still apply.
+ */
+export const WORKSPACE_ACTOR_ROLES = ['vendor', 'pm', 'cas', 'finance', 'client'];
+export const requireWorkspaceActor = (req, res, next) => {
+  if (!WORKSPACE_ACTOR_ROLES.includes(req.user?.role)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Workspace actor role required.'
+    });
+  }
+  next();
+};
+
+/**
  * Middleware to check if user is a client
  */
 export const requireClient = (req, res, next) => {

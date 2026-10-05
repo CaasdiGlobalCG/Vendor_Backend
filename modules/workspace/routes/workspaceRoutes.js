@@ -7,9 +7,12 @@ import {
   updateQuotation,
   updateQuotationStatus,
   sendQuotationToPM,
+  saveQuotationCommission,
   deleteQuotation,
   updateQuotationPdfUrl,
   savePmPOFile,
+  uploadClientPOFile,
+  useSystemPO,
   createInvoice,
   updateInvoice,
   getInvoices,
@@ -39,7 +42,7 @@ import {
   clientApproveProjectComplete,
   clientRejectProjectComplete
 } from '../controllers/workspaceController.js';
-import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus } from '../controllers/workspaceInvoicesController.js';
+import { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus, saveInvoiceCommission } from '../controllers/workspaceInvoicesController.js';
 import { getWorkspaceCreditNotes, getWorkspaceCreditNoteById, getCreditNoteStats, updateCreditNoteRequestStatus } from '../controllers/workspaceCreditNotesController.js';
 import { getWorkspacePurchaseOrders } from '../controllers/workspacePurchaseOrdersController.js';
 import { autoCheckClientPO, submitPoCheckReason, forwardPoCheckReason } from '../controllers/poAutoCheckController.js';
@@ -48,7 +51,7 @@ import purchaseRequisitionsRouter from './purchaseRequisitionsRoutes.js';
 import procurementRequestsRouter from './procurementRequestsRoutes.js';
 import procurementQueriesRouter from './procurementQueriesRoutes.js';
 import { getRevenueForecasting, getCohortAnalysis } from '../controllers/subscriptionAnalyticsController.js';
-import { authenticateUser, requireVendor, requirePM, requireClient, checkVendorAccess } from '../../../middleware/authMiddleware.js';
+import { authenticateUser, requireVendor, requirePM, requireClient, requireFinanceOrPM, requireWorkspaceActor, checkVendorAccess } from '../../../middleware/authMiddleware.js';
 
 const router = express.Router();
 
@@ -117,8 +120,27 @@ router.post('/client-approve-project-complete', authenticateUser, clientApproveP
  */
 router.post('/client-reject-project-complete', authenticateUser, clientRejectProjectComplete);
 
-// Apply vendor middleware to remaining routes
-router.use(requireVendor);
+// Finance/PM-only routes (before requireVendor middleware) — commission writes
+// on workspace documents. Vendors are excluded: they never mutate commission.
+/**
+ * @route   PUT /api/workspace/quotations/:quotationId/commission
+ * @desc    Save item-wise commission on a quotation (Finance or PM)
+ * @access  Private (Finance/PM only)
+ */
+router.put('/quotations/:quotationId/commission', requireWorkspaceActor, saveQuotationCommission);
+
+/**
+ * @route   PUT /api/workspace/invoices/:invoiceId/commission
+ * @desc    Save item-wise commission on an invoice (Finance or PM)
+ * @access  Private (Finance/PM only)
+ */
+router.put('/invoices/:invoiceId/commission', requireWorkspaceActor, saveInvoiceCommission);
+
+// Apply workspace-actor middleware to remaining routes — the document tool is
+// shared: every role (vendor, PM, CAS, finance, client) creates and manages
+// their own documents, scoped by their owner id. Genuinely vendor-only ops
+// (send-to-PM, PO responses, progress submission) still check role internally.
+router.use(requireWorkspaceActor);
 
 // Mount purchase requisitions routes
 router.use('/purchase-requisitions', purchaseRequisitionsRouter);
@@ -140,7 +162,7 @@ router.use('/procurement-queries', procurementQueriesRouter);
  * @desc    Create a new quotation (Vendor only)
  * @access  Private
  */
-router.post('/quotations', authenticateUser, requireVendor, createQuotation);
+router.post('/quotations', authenticateUser, requireWorkspaceActor, createQuotation);
 
 /**
  * @route   GET /api/workspace/quotations
@@ -168,49 +190,63 @@ router.get('/quotations/:quotationId/po-status', authenticateUser, getPOStatusBy
  * @desc    Save PM-modified PO file (with commission removed and rates adjusted)
  * @access  Private (PM only)
  */
-router.post('/quotations/:quotationId/pm-po-file', authenticateUser, requirePM, savePmPOFile);
+router.post('/quotations/:quotationId/pm-po-file', authenticateUser, requireWorkspaceActor, savePmPOFile);
+
+/**
+ * @route   POST /api/workspace/quotations/:quotationId/upload-client-po
+ * @desc    Client uploads their PO file onto an approved quotation
+ * @access  Private (any workspace actor — client uses it)
+ */
+router.post('/quotations/:quotationId/upload-client-po', authenticateUser, requireWorkspaceActor, upload.single('po_file'), uploadClientPOFile);
+
+/**
+ * @route   POST /api/workspace/quotations/:quotationId/use-system-po
+ * @desc    Client opts for the system-generated PO (no file) — EM 'poType: system'
+ * @access  Private (any workspace actor — client uses it)
+ */
+router.post('/quotations/:quotationId/use-system-po', authenticateUser, requireWorkspaceActor, useSystemPO);
 
 /**
  * @route   POST /api/workspace/quotations/:quotationId/auto-check-po
  * @desc    Auto-check client-uploaded PO against the sent quotation (items, rates, GST, total)
  * @access  Private (PM only)
  */
-router.post('/quotations/:quotationId/auto-check-po', authenticateUser, requirePM, autoCheckClientPO);
+router.post('/quotations/:quotationId/auto-check-po', authenticateUser, requireWorkspaceActor, autoCheckClientPO);
 
 /**
  * @route   POST /api/workspace/quotations/:quotationId/po-check-reason
  * @desc    PM submits a reason for auto-check discrepancies (finance approves it)
  * @access  Private (PM only)
  */
-router.post('/quotations/:quotationId/po-check-reason', authenticateUser, requirePM, submitPoCheckReason);
+router.post('/quotations/:quotationId/po-check-reason', authenticateUser, requireWorkspaceActor, submitPoCheckReason);
 
 /**
  * @route   POST /api/workspace/quotations/:quotationId/po-check-reason/forward
  * @desc    PM forwards a client-submitted reason to finance for approval
  * @access  Private (PM only)
  */
-router.post('/quotations/:quotationId/po-check-reason/forward', authenticateUser, requirePM, forwardPoCheckReason);
+router.post('/quotations/:quotationId/po-check-reason/forward', authenticateUser, requireWorkspaceActor, forwardPoCheckReason);
 
 /**
  * @route   PUT /api/workspace/quotations/:quotationId
  * @desc    Update quotation (Vendor only)
  * @access  Private
  */
-router.put('/quotations/:quotationId', authenticateUser, requireVendor, updateQuotation);
+router.put('/quotations/:quotationId', authenticateUser, requireWorkspaceActor, updateQuotation);
 
 /**
  * @route   PATCH /api/workspace/quotations/:quotationId
  * @desc    Update quotation PDF URL (Vendor only, after styled PDF upload)
  * @access  Private
  */
-router.patch('/quotations/:quotationId', authenticateUser, requireVendor, updateQuotationPdfUrl);
+router.patch('/quotations/:quotationId', authenticateUser, requireWorkspaceActor, updateQuotationPdfUrl);
 
 /**
  * @route   PUT /api/workspace/quotations/:quotationId/status
  * @desc    Update quotation status (PM approval only)
  * @access  Private
  */
-router.put('/quotations/:quotationId/status', authenticateUser, requirePM, updateQuotationStatus);
+router.put('/quotations/:quotationId/status', authenticateUser, requireWorkspaceActor, updateQuotationStatus);
 
 /**
  * @route   PUT /api/workspace/quotations/:quotationId/send-to-pm
@@ -224,7 +260,7 @@ router.put('/quotations/:quotationId/send-to-pm', authenticateUser, requireVendo
  * @desc    Delete a draft quotation (Vendor only; locked once sent to PM)
  * @access  Private
  */
-router.delete('/quotations/:quotationId', authenticateUser, requireVendor, deleteQuotation);
+router.delete('/quotations/:quotationId', authenticateUser, requireWorkspaceActor, deleteQuotation);
 
 /**
  * ========================================
@@ -237,14 +273,14 @@ router.delete('/quotations/:quotationId', authenticateUser, requireVendor, delet
  * @desc    Create a new invoice (Vendor only)
  * @access  Private
  */
-router.post('/invoices', authenticateUser, requireVendor, createInvoice);
+router.post('/invoices', authenticateUser, requireWorkspaceActor, createInvoice);
 
 /**
  * @route   PUT /api/workspace/invoices/:invoiceId
  * @desc    Update an existing invoice (Vendor only)
  * @access  Private
  */
-router.put('/invoices/:invoiceId', authenticateUser, requireVendor, updateInvoice);
+router.put('/invoices/:invoiceId', authenticateUser, requireWorkspaceActor, updateInvoice);
 
 /**
  * @route   GET /api/workspace/invoices
@@ -265,7 +301,7 @@ router.put('/invoices/:invoiceId/send-to-pm', authenticateUser, requireVendor, s
  * @desc    Update invoice status (Vendor only)
  * @access  Private
  */
-router.put('/invoices/:invoiceId/status', authenticateUser, requireVendor, updateWorkspaceInvoiceStatus);
+router.put('/invoices/:invoiceId/status', authenticateUser, requireWorkspaceActor, updateWorkspaceInvoiceStatus);
 
 /**
  * @route   GET /api/workspace/invoices/stats
@@ -285,7 +321,7 @@ router.get('/invoices/stats', authenticateUser, getInvoiceStats);
  * @desc    Create a new purchase order from a quotation (Vendor only)
  * @access  Private
  */
-router.post('/purchase-orders', requireVendor, createPurchaseOrderFromQuote);
+router.post('/purchase-orders', requireWorkspaceActor, createPurchaseOrderFromQuote);
 
 /**
  * @route   GET /api/workspace/purchase-orders
@@ -299,14 +335,14 @@ router.get('/purchase-orders', getWorkspacePurchaseOrders);
  * @desc    PM reviews PO details with commission breakdown
  * @access  Private (PM only)
  */
-router.get('/purchase-orders/:poId/review', requirePM, reviewPurchaseOrder);
+router.get('/purchase-orders/:poId/review', requireWorkspaceActor, reviewPurchaseOrder);
 
 /**
  * @route   PUT /api/workspace/purchase-orders/:poId/send-to-vendor
  * @desc    PM sends the commission-stripped PO to the vendor for confirmation
  * @access  Private (PM only)
  */
-router.put('/purchase-orders/:poId/send-to-vendor', authenticateUser, requirePM, sendPurchaseOrderToVendor);
+router.put('/purchase-orders/:poId/send-to-vendor', authenticateUser, requireWorkspaceActor, sendPurchaseOrderToVendor);
 
 /**
  * @route   PATCH /api/workspace/purchase-orders/:poId/vendor-response
@@ -360,7 +396,7 @@ router.patch('/credit-notes/:creditNoteId/status', authenticateUser, updateCredi
  * @desc    Create a new item (Vendor only)
  * @access  Private
  */
-router.post('/items', authenticateUser, requireVendor, createItem);
+router.post('/items', authenticateUser, requireWorkspaceActor, createItem);
 
 /**
  * @route   GET /api/workspace/items
@@ -374,14 +410,14 @@ router.get('/items', authenticateUser, getItems);
  * @desc    Update an item (Vendor only)
  * @access  Private
  */
-router.put('/items/:itemId', authenticateUser, requireVendor, updateItem);
+router.put('/items/:itemId', authenticateUser, requireWorkspaceActor, updateItem);
 
 /**
  * @route   DELETE /api/workspace/items/:itemId
  * @desc    Delete an item (Vendor only)
  * @access  Private
  */
-router.delete('/items/:itemId', authenticateUser, requireVendor, deleteItem);
+router.delete('/items/:itemId', authenticateUser, requireWorkspaceActor, deleteItem);
 
 /**
  * ========================================
@@ -394,7 +430,7 @@ router.delete('/items/:itemId', authenticateUser, requireVendor, deleteItem);
  * @desc    Create a new customer (Vendor only)
  * @access  Private
  */
-router.post('/customers', authenticateUser, requireVendor, createCustomer);
+router.post('/customers', authenticateUser, requireWorkspaceActor, createCustomer);
 
 /**
  * @route   GET /api/workspace/customers
@@ -415,7 +451,7 @@ router.get('/customers/:customerId', authenticateUser, getCustomerById);
  * @desc    Update customer (Vendor only)
  * @access  Private
  */
-router.put('/customers/:customerId', authenticateUser, requireVendor, updateCustomer);
+router.put('/customers/:customerId', authenticateUser, requireWorkspaceActor, updateCustomer);
 
 /**
  * @route   GET /api/workspace/customers/search
@@ -435,7 +471,7 @@ router.get('/customers/search', authenticateUser, searchCustomers);
  * @desc    Create a new subscription (Vendor only)
  * @access  Private
  */
-router.post('/subscriptions', authenticateUser, requireVendor, createSubscription);
+router.post('/subscriptions', authenticateUser, requireWorkspaceActor, createSubscription);
 
 /**
  * @route   GET /api/workspace/subscriptions
@@ -456,28 +492,28 @@ router.get('/subscriptions/stats', authenticateUser, getSubscriptionStats);
  * @desc    Update subscription (Vendor only)
  * @access  Private
  */
-router.put('/subscriptions/:subscriptionId', authenticateUser, requireVendor, updateSubscription);
+router.put('/subscriptions/:subscriptionId', authenticateUser, requireWorkspaceActor, updateSubscription);
 
 /**
  * @route   DELETE /api/workspace/subscriptions/:subscriptionId
  * @desc    Delete subscription (Vendor only)
  * @access  Private
  */
-router.delete('/subscriptions/:subscriptionId', authenticateUser, requireVendor, deleteSubscription);
+router.delete('/subscriptions/:subscriptionId', authenticateUser, requireWorkspaceActor, deleteSubscription);
 
 /**
  * @route   PUT /api/workspace/subscriptions/:subscriptionId/pause
  * @desc    Pause subscription (Vendor only)
  * @access  Private
  */
-router.put('/subscriptions/:subscriptionId/pause', authenticateUser, requireVendor, pauseSubscription);
+router.put('/subscriptions/:subscriptionId/pause', authenticateUser, requireWorkspaceActor, pauseSubscription);
 
 /**
  * @route   PUT /api/workspace/subscriptions/:subscriptionId/resume
  * @desc    Resume subscription (Vendor only)
  * @access  Private
  */
-router.put('/subscriptions/:subscriptionId/resume', authenticateUser, requireVendor, resumeSubscription);
+router.put('/subscriptions/:subscriptionId/resume', authenticateUser, requireWorkspaceActor, resumeSubscription);
 
 /**
  * @route   GET /api/workspace/subscriptions/:subscriptionId/history
@@ -491,7 +527,7 @@ router.get('/subscriptions/:subscriptionId/history', authenticateUser, getSubscr
  * @desc    Generate invoice for subscription (Vendor only)
  * @access  Private
  */
-router.post('/subscriptions/:subscriptionId/generate-invoice', authenticateUser, requireVendor, generateSubscriptionInvoice);
+router.post('/subscriptions/:subscriptionId/generate-invoice', authenticateUser, requireWorkspaceActor, generateSubscriptionInvoice);
 
 /**
  * @route   POST /api/workspace/update-progress
@@ -512,13 +548,14 @@ router.post('/project-completion', authenticateUser, requireVendor, upload.singl
  * @desc    Get 12-month revenue forecast based on subscriptions (Vendor only)
  * @access  Private
  */
-router.get('/subscriptions/analytics/forecast', authenticateUser, requireVendor, getRevenueForecasting);
+router.get('/subscriptions/analytics/forecast', authenticateUser, requireWorkspaceActor, getRevenueForecasting);
 
 /**
  * @route   GET /api/workspace/subscriptions/analytics/cohorts
  * @desc    Get cohort analysis of subscriptions by creation month (Vendor only)
  * @access  Private
  */
-router.get('/subscriptions/analytics/cohorts', authenticateUser, requireVendor, getCohortAnalysis);
+router.get('/subscriptions/analytics/cohorts', authenticateUser, requireWorkspaceActor, getCohortAnalysis);
 
 export default router;
+

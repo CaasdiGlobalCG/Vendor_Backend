@@ -15,20 +15,23 @@ const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
 const getWorkspacePurchaseOrders = async (req, res) => {
   try {
     const { vendorId, status, workspaceId } = req.query;
+    // ownerId scopes to the document owner for ANY role — vendorId doubles
+    // as the owner key, so PM/finance/client manage their own POs.
+    const ownerScope = req.query.ownerId || vendorId;
 
-    if (!vendorId) {
+    if (!ownerScope) {
       return res.status(400).json({
         success: false,
         message: 'Vendor ID is required'
       });
     }
 
-    console.log('📋 Fetching workspace purchase orders for vendor:', vendorId, 'status filter:', status, 'workspace:', workspaceId);
+    console.log('📋 Fetching workspace purchase orders for owner:', ownerScope, 'status filter:', status, 'workspace:', workspaceId);
 
-    // Base filter: all POs for this vendor
+    // Base filter: all POs for this owner
     let filterExpression = 'vendorId = :vendorId';
     const expressionAttributeValues = {
-      ':vendorId': { S: vendorId }
+      ':vendorId': { S: ownerScope }
     };
     const expressionAttributeNames = {};
 
@@ -114,7 +117,18 @@ const getWorkspacePurchaseOrders = async (req, res) => {
         status: po.status || 'Pending',
         purchaseReturns: po.purchaseReturns || 'None',
         vendorId: po.vendorId,
+        creatorRole: po.creatorRole || 'vendor',
+        creatorUserId: po.creatorUserId || null,
         clientId: po.clientId || null,
+        createdAt: po.createdAt || null,
+        updatedAt: po.updatedAt || null,
+        subTotal: po.subTotal ?? po.subtotal ?? 0,
+        total: po.total ?? rawTotal,
+        totalCgst: po.totalCgst ?? 0,
+        totalSgst: po.totalSgst ?? 0,
+        totalIgst: po.totalIgst ?? 0,
+        termsAndConditions: po.termsAndConditions,
+        customerNotes: po.customerNotes,
         workspaceId: po.workspaceId || null,
         workspaceName: po.workspaceName || '',
         taskId: po.taskId || null,

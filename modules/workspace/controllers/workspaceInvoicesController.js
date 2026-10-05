@@ -1,5 +1,5 @@
 import { DynamoDBClient, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
+import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 
 const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 
@@ -13,24 +13,33 @@ const invoicesByVendorTable = 'workspace_invoices';
  */
 const getWorkspaceInvoices = async (req, res) => {
   try {
-    const { vendorId } = req.query;
+    const { vendorId, workspaceId } = req.query;
+    // ownerId scopes to the document owner for ANY role — vendorId doubles
+    // as the owner key, so PM/finance/client manage their own invoices.
+    const ownerScope = req.query.ownerId || vendorId;
 
-    if (!vendorId) {
+    if (!ownerScope) {
       return res.status(400).json({ 
         success: false, 
         message: 'Vendor ID is required' 
       });
     }
 
-    console.log('📋 Fetching workspace invoices for vendor:', vendorId);
+    console.log('📋 Fetching workspace invoices for owner:', ownerScope, 'workspace:', workspaceId || 'all');
 
     const params = {
       TableName: invoicesByVendorTable,
       FilterExpression: 'vendorId = :vendorId',
       ExpressionAttributeValues: {
-        ':vendorId': { S: vendorId }
+        ':vendorId': { S: ownerScope }
       }
     };
+
+    // Scope to a specific workspace when requested
+    if (workspaceId && workspaceId !== 'undefined') {
+      params.FilterExpression += ' AND workspaceId = :workspaceId';
+      params.ExpressionAttributeValues[':workspaceId'] = { S: workspaceId };
+    }
 
     const command = new ScanCommand(params);
     const { Items } = await dbClient.send(command);
@@ -100,6 +109,12 @@ const getWorkspaceInvoices = async (req, res) => {
         clientId: invoice.clientId || null,
         // Customer snapshot
         customerDetails: invoice.customerDetails,
+        // Finance commission applied on the canvas doc (hidden from vendor UI)
+        commission: invoice.commission || null,
+        creatorRole: invoice.creatorRole || 'vendor',
+        creatorUserId: invoice.creatorUserId || null,
+        tdsType: invoice.tdsType || '',
+        tdsValue: invoice.tdsValue ?? null,
         // References
         quoteId: invoice.quoteId || null, // Reference to original quote if converted from quote
         referenceQuoteNumber: invoice.referenceQuoteNumber || null,
@@ -251,4 +266,88 @@ const updateWorkspaceInvoiceStatus = async (req, res) => {
   }
 };
 
-export { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus };
+/**
+ * Save item-wise finance commission on an invoice (Finance/PM action).
+ * Writes commissionPercent + clientRate/clientAmount onto each item and a
+ * commission summary onto the row — vendors cannot call this.
+ * @route PUT /api/workspace/invoices/:invoiceId/commission
+ * @access Private (Finance or PM only)
+ */
+const saveInvoiceCommission = async (req, res) => {
+  try {
+    const { invoiceId } = req.params;
+    const { vendorId, items, commission } = req.body;
+    const userRole = req.user?.role;
+
+    // Commission may only be applied by staff-side actors: PMs, or finance
+    // users identified by a FIN- prefixed user id (token identity or the
+    // x-actor-id header sent for FIN- workspace links).
+    const tokenUserId = req.user?.userId || '';
+    const headerActorId = req.headers['x-actor-id'] || '';
+    const isStaff = userRole === 'pm'
+      || tokenUserId.startsWith('FIN-')
+      || headerActorId.startsWith('FIN-');
+    if (!isStaff) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only PM or a FIN- finance user can apply commission'
+      });
+    }
+
+    if (!invoiceId || !vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'invoiceId and vendorId are required'
+      });
+    }
+
+    const updateParams = {
+      TableName: invoicesByVendorTable,
+      Key: {
+        vendorId: { S: vendorId },
+        invoiceId: { S: invoiceId }
+      },
+      UpdateExpression: 'SET #items = :items, #commission = :commission, #updatedAt = :updatedAt',
+      ConditionExpression: 'attribute_exists(invoiceId)',
+      ExpressionAttributeNames: {
+        '#items': 'items',
+        '#commission': 'commission',
+        '#updatedAt': 'updatedAt'
+      },
+      ExpressionAttributeValues: marshall({
+        ':items': Array.isArray(items) ? items : [],
+        ':commission': commission || null,
+        ':updatedAt': new Date().toISOString()
+      }, { removeUndefinedValues: true }),
+      ReturnValues: 'ALL_NEW'
+    };
+
+    let updatedInvoice;
+    try {
+      const result = await dbClient.send(new UpdateItemCommand(updateParams));
+      updatedInvoice = result.Attributes ? unmarshall(result.Attributes) : null;
+    } catch (err) {
+      if (err?.name === 'ConditionalCheckFailedException') {
+        return res.status(404).json({ success: false, message: 'Invoice not found' });
+      }
+      throw err;
+    }
+
+    console.log(`✅ Commission saved on invoice ${invoiceId} (total: ${commission?.total ?? 'n/a'})`);
+
+    return res.status(200).json({
+      success: true,
+      data: updatedInvoice,
+      message: 'Commission saved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error saving invoice commission:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save invoice commission',
+      error: error.message
+    });
+  }
+};
+
+export { getWorkspaceInvoices, getInvoiceStats, updateWorkspaceInvoiceStatus, saveInvoiceCommission };

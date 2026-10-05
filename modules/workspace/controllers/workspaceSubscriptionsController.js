@@ -8,6 +8,18 @@ const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 const WORKSPACE_SUBSCRIPTIONS_TABLE = process.env.WORKSPACE_SUBSCRIPTIONS_TABLE || 'workspace_subscriptions';
 const WORKSPACE_INVOICES_TABLE = process.env.WORKSPACE_INVOICES_TABLE || 'workspace_invoices';
 
+// Any authenticated workspace role may manage subscriptions — scoped via the
+// vendorId owner key, not the caller's role.
+const DOC_MANAGER_ROLES = ['vendor', 'pm', 'cas', 'finance', 'client'];
+
+// Resolve who actually created a doc — verified token role, or the workspace
+// actor identity carried by x-actor-id/x-actor-role headers (external
+// FIN-/CAS/PM viewers whose browser holds an ambient vendor session).
+const getActorIdentity = (req) => ({
+  creatorRole: req.headers['x-actor-role'] || req.body?.creatorRole || req.user?.role || 'vendor',
+  creatorUserId: req.headers['x-actor-id'] || req.user?.userId || req.user?.sub || null
+});
+
 /**
  * Get all subscriptions for a vendor
  * @route GET /api/workspace/subscriptions
@@ -16,14 +28,17 @@ const WORKSPACE_INVOICES_TABLE = process.env.WORKSPACE_INVOICES_TABLE || 'worksp
 const getWorkspaceSubscriptions = async (req, res) => {
   try {
     const { vendorId } = req.query;
+    // ownerId scopes to the document owner for ANY role — vendorId doubles
+    // as the owner key, so PM/finance/client manage their own subscriptions.
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
-    console.log(`📋 Fetching subscriptions - Role: ${userRole}, Vendor ID: ${vendorId}`);
+    console.log(`📋 Fetching subscriptions - Role: ${userRole}, Owner: ${ownerScope}`);
 
     let subscriptions = [];
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       // PM can see all subscriptions
       const params = {
         TableName: WORKSPACE_SUBSCRIPTIONS_TABLE
@@ -33,9 +48,10 @@ const getWorkspaceSubscriptions = async (req, res) => {
       if (Items) {
         subscriptions = Items.map(item => unmarshall(item));
       }
-    } else if (userRole === 'vendor') {
-      // Vendor can only see their own subscriptions
-      if (!vendorId || vendorId !== userId) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      // Owner-scoped fetch — vendor sees own; PM/finance/client pass ownerId
+      // to manage THEIR own subscriptions the same way.
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own subscriptions'
@@ -46,7 +62,7 @@ const getWorkspaceSubscriptions = async (req, res) => {
         TableName: WORKSPACE_SUBSCRIPTIONS_TABLE,
         KeyConditionExpression: 'vendorId = :vendorId',
         ExpressionAttributeValues: {
-          ':vendorId': { S: vendorId }
+          ':vendorId': { S: ownerScope }
         }
       };
       const command = new QueryCommand(params);
@@ -95,20 +111,21 @@ const getWorkspaceSubscriptions = async (req, res) => {
 const getSubscriptionStats = async (req, res) => {
   try {
     const { vendorId } = req.query;
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
     let subscriptions = [];
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       const params = { TableName: WORKSPACE_SUBSCRIPTIONS_TABLE };
       const command = new ScanCommand(params);
       const { Items } = await dbClient.send(command);
       if (Items) {
         subscriptions = Items.map(item => unmarshall(item));
       }
-    } else if (userRole === 'vendor') {
-      if (!vendorId || vendorId !== userId) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own stats'
@@ -119,7 +136,7 @@ const getSubscriptionStats = async (req, res) => {
         TableName: WORKSPACE_SUBSCRIPTIONS_TABLE,
         KeyConditionExpression: 'vendorId = :vendorId',
         ExpressionAttributeValues: {
-          ':vendorId': { S: vendorId }
+          ':vendorId': { S: ownerScope }
         }
       };
       const command = new QueryCommand(params);
@@ -182,7 +199,7 @@ const createSubscription = async (req, res) => {
 
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can create subscriptions'
@@ -215,6 +232,7 @@ const createSubscription = async (req, res) => {
       subscriptionId,
       customSubscriptionId: customSubscriptionId || subscriptionId,
       vendorId,
+      ...getActorIdentity(req),
       customerId,
       customerName,
       billingCycle,
@@ -267,7 +285,7 @@ const updateSubscription = async (req, res) => {
     const { vendorId, ...updateData } = req.body;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can update subscriptions'
@@ -322,7 +340,7 @@ const deleteSubscription = async (req, res) => {
     const { subscriptionId } = req.params;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can delete subscriptions'
@@ -361,7 +379,7 @@ const pauseSubscription = async (req, res) => {
     const { subscriptionId } = req.params;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can pause subscriptions'
@@ -413,7 +431,7 @@ const resumeSubscription = async (req, res) => {
     const { subscriptionId } = req.params;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can resume subscriptions'
@@ -546,7 +564,7 @@ const generateSubscriptionInvoice = async (req, res) => {
     const { subscriptionId } = req.params;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can generate invoices'
@@ -666,7 +684,7 @@ const bulkPauseSubscriptions = async (req, res) => {
     const { subscriptionIds } = req.body;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can pause subscriptions'
@@ -741,7 +759,7 @@ const bulkResumeSubscriptions = async (req, res) => {
     const { subscriptionIds } = req.body;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Only vendors can resume subscriptions'

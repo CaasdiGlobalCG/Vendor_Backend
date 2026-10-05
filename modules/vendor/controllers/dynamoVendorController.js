@@ -21,6 +21,71 @@ const transporter = nodemailer.createTransport({
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
+// ── Resubmission change log ──────────────────────────────────────────────
+// When a vendor resubmits KYC sections, record field-level diffs so the
+// auditor can see exactly what changed vs the previous submission.
+const RESUBMIT_LOG_MAX = 200;
+
+// A stored document descriptor ({name, url, s3Key…}) is a leaf — diff it as one
+// value instead of exploding it into per-property rows.
+const isFileLike = (v) =>
+  v && typeof v === 'object' && !Array.isArray(v)
+  && typeof v.name === 'string'
+  && (v.url != null || v.s3Key != null || v.key != null || v.type != null);
+
+const summarizeChangeValue = (v) => {
+  if (v === null || v === undefined || v === '') return '—';
+  if (Array.isArray(v)) {
+    if (!v.length) return '—';
+    if (v.every((i) => i === null || typeof i !== 'object')) return v.join(', ') || '—';
+    if (v.every((i) => isFileLike(i))) return v.map((i) => i.name).join(', ');
+    return `${v.length} item(s)`;
+  }
+  if (typeof v === 'object') {
+    if (isFileLike(v)) return v.name;
+    return JSON.stringify(v).slice(0, 120);
+  }
+  return String(v).slice(0, 200);
+};
+
+// Flatten nested objects into leaf paths (address.shipping.city → leaf) so the
+// change log reads as one row per leaf field instead of raw JSON blobs.
+const flattenToLeaves = (obj, prefix = '', out = {}) => {
+  for (const [k, v] of Object.entries(obj && typeof obj === 'object' ? obj : {})) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v) && !isFileLike(v)) {
+      flattenToLeaves(v, path, out);
+    } else {
+      out[path] = v;
+    }
+  }
+  return out;
+};
+
+const diffSectionChanges = (section, oldObj, newObj, changedAt) => {
+  const old = flattenToLeaves(oldObj);
+  const nw = flattenToLeaves(newObj);
+  const entries = [];
+  for (const field of new Set([...Object.keys(old), ...Object.keys(nw)])) {
+    const ov = old[field];
+    const nv = nw[field];
+    if (JSON.stringify(ov ?? null) === JSON.stringify(nv ?? null)) continue;
+    // Skip empty↔empty noise (null/undefined vs '')
+    if ((ov === null || ov === undefined || ov === '') && (nv === null || nv === undefined || nv === '')) continue;
+    entries.push({ section, field, from: summarizeChangeValue(ov), to: summarizeChangeValue(nv), changedAt });
+  }
+  return entries;
+};
+
+const VENDOR_SECTION_ATTRS = {
+  vendor: 'vendorDetails',
+  company: 'companyDetails',
+  service: 'serviceProductDetails',
+  bank: 'bankDetails',
+  compliance: 'complianceCertifications',
+  additional: 'additionalDetails',
+};
+
 export const submitVendorForm = async (req, res) => {
   try {
     const formData = {
@@ -338,11 +403,24 @@ export const submitVendorForm = async (req, res) => {
       };
 
       if (isResubmit) {
+        const resubmitNow = new Date().toISOString();
         updatedVendorData.status = 'pending';
         updatedVendorData.resubmitPermissions = {};
         updatedVendorData.resubmitRemarks = null;
         updatedVendorData.resubmitRequestedAt = null;
-        updatedVendorData.resubmittedAt = new Date().toISOString();
+        updatedVendorData.resubmittedAt = resubmitNow;
+
+        // Field-level change log — diff each granted section's stored data
+        // against the resubmitted payload so the auditor can review exactly
+        // what the vendor changed.
+        const priorLog = Array.isArray(vendor.resubmitChangeLog) ? vendor.resubmitChangeLog : [];
+        const changes = grantedSectionKeys.flatMap((key) =>
+          diffSectionChanges(key, vendor[VENDOR_SECTION_ATTRS[key]], formData[VENDOR_SECTION_ATTRS[key]], resubmitNow)
+        );
+        if (changes.length) {
+          updatedVendorData.resubmitChangeLog = [...priorLog, ...changes].slice(-RESUBMIT_LOG_MAX);
+        }
+
         // Close out a vendor-initiated "Update KYC" request — the resubmission
         // fulfils it and a fresh request would be needed for the next update.
         if (vendor.kycUpdateRequest) {

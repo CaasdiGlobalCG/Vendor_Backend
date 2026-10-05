@@ -12,12 +12,32 @@ const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 // Table names
 const WORKSPACE_QUOTATIONS_TABLE = 'workspace_quotations';
 const WORKSPACE_INVOICES_TABLE = 'workspace_invoices';
+
+// Any authenticated workspace role may create/manage documents — each actor's
+// docs are scoped via the vendorId field, which doubles as the owner key.
+const DOC_MANAGER_ROLES = ['vendor', 'pm', 'cas', 'finance', 'client'];
+
+// Resolve who actually created a doc — the verified token role, or the
+// workspace actor identity carried by x-actor-id/x-actor-role headers for
+// external FIN-/CAS/PM viewers whose browser holds an ambient vendor session.
+const getActorIdentity = (req) => ({
+  creatorRole: req.headers['x-actor-role'] || req.body?.creatorRole || req.user?.role || 'vendor',
+  creatorUserId: req.headers['x-actor-id'] || req.user?.userId || req.user?.sub || null
+});
+
+// PM identity — verified token role, or a workspace-actor PM carried via the
+// x-actor-role header (external PM viewers with an ambient session).
+const isPmActor = (req) =>
+  req.user?.role === 'pm' || req.headers['x-actor-role'] === 'pm';
 const WORKSPACE_CREDIT_NOTES_TABLE = 'workspace_credit_notes';
 const WORKSPACE_PURCHASE_ORDERS_TABLE = 'workspace_purchase_orders';
 const WORKSPACE_ITEMS_TABLE = 'workspace_items';
 const WORKSPACE_CUSTOMERS_TABLE = 'workspace_customers';
 const WORKSPACE_DELIVERY_CHALLANS_TABLE = 'workspace_delivery_challans';
 const PM_PROJECTS_TABLE = 'pm_projects';
+// EM finance dashboard's quote queue — written when a quote is sent from PM to
+// finance (same DynamoDB account; mirrors EM's pm_quotes_to_finance rows).
+const PM_QUOTES_TO_FINANCE_TABLE = 'pm_quotes_to_finance';
 
 /**
  * Helper: find project context for a given workspaceId from pm_projects.
@@ -120,11 +140,11 @@ const createQuotation = async (req, res) => {
     // Accept quote number from multiple possible field names (Quote# field from form)
     const quoteNumberValue = customQuoteId || quoteNumber || quoteCode || quoteNo || null;
 
-    // Only vendors can create quotations
-    if (userRole !== 'vendor') {
+    // Any workspace actor can create quotations (scoped to their own id)
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can create quotations'
+        message: 'Only workspace actors can create quotations'
       });
     }
 
@@ -188,6 +208,7 @@ const createQuotation = async (req, res) => {
       customQuoteId: quoteNumberValue,
       quoteNumber: quoteNumberValue,
       vendorId,
+      ...getActorIdentity(req),
       customerId,
       customerName: customerName || '',
       quotationDate: quotationDate || new Date().toISOString().split('T')[0],
@@ -281,11 +302,11 @@ const updateQuotation = async (req, res) => {
       });
     }
 
-    // Only vendors can update quotations
-    if (userRole !== 'vendor') {
+    // Any workspace actor can update their own quotations
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can update quotations'
+        message: 'Only workspace actors can update quotations'
       });
     }
 
@@ -331,7 +352,26 @@ const updateQuotation = async (req, res) => {
     // No need to verify vendor ownership since we used vendorId in the composite key lookup
 
     // Get items from request body or use existing items
-    const items = req.body.items || quotationData.items || [];
+    let items = req.body.items || quotationData.items || [];
+
+    // Preserve finance commission on items — vendor edits never carry the
+    // clientRate/commissionPercent fields (vendors can't see them), so a vendor
+    // update would otherwise wipe commission. Recompute client pricing from the
+    // (possibly updated) base rate/amount using the stored percent.
+    items = items.map((item, i) => {
+      const prev = (quotationData.items || [])[i];
+      if (!prev || prev.commissionPercent == null) return item;
+      if (item.commissionPercent != null) return item; // already carries it
+      const pct = Number(prev.commissionPercent) || 0;
+      const rate = Number(item.rate) || 0;
+      const amount = Number(item.amount) || rate * (Number(item.quantity) || 0);
+      return {
+        ...item,
+        commissionPercent: pct,
+        clientRate: +(rate * (1 + pct / 100)).toFixed(2),
+        clientAmount: +(amount * (1 + pct / 100)).toFixed(2)
+      };
+    });
 
     // Calculate subtotal from items if not provided or if items changed
     let calculatedSubtotal = req.body.subtotal;
@@ -439,16 +479,19 @@ const updateQuotation = async (req, res) => {
 const getQuotations = async (req, res) => {
   try {
     const { vendorId, workspaceId, taskId, subtaskId, status } = req.query;
+    // ownerId scopes to the document owner for ANY role — vendorId doubles as
+    // the owner/partition key, so PM/finance/client manage their own docs.
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
     console.log(
-      `📋 Fetching quotations - Role: ${userRole}, User ID: ${userId}, Requested Vendor ID: ${vendorId}, workspaceId: ${workspaceId}, taskId: ${taskId}, subtaskId: ${subtaskId}, status: ${status}`
+      `📋 Fetching quotations - Role: ${userRole}, User ID: ${userId}, Requested Vendor ID: ${vendorId}, ownerId: ${req.query.ownerId}, workspaceId: ${workspaceId}, taskId: ${taskId}, subtaskId: ${subtaskId}, status: ${status}`
     );
 
     let quotations = [];
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       // PM can see all quotations from all vendors
       console.log('👑 PM accessing all quotations');
 
@@ -469,22 +512,23 @@ const getQuotations = async (req, res) => {
       if (Items && Items.length > 0) {
         quotations = Items.map(item => unmarshall(item));
       }
-    } else if (userRole === 'vendor') {
-      // Vendor can only see their own quotations
-      if (!vendorId || false) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      // Owner-scoped fetch — vendor sees own docs; PM/finance/client pass
+      // ownerId to manage THEIR own documents the same way.
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own quotations'
         });
       }
 
-      console.log(`🔒 Vendor ${vendorId} accessing their quotations with optional workspace/task filters`);
+      console.log(`🔒 ${userRole} accessing quotations owned by ${ownerScope} with optional workspace/task filters`);
 
       const params = {
         TableName: WORKSPACE_QUOTATIONS_TABLE,
         KeyConditionExpression: 'vendorId = :vendorId',
         ExpressionAttributeValues: {
-          ':vendorId': { S: vendorId }
+          ':vendorId': { S: ownerScope }
         }
       };
 
@@ -600,6 +644,9 @@ const getQuotations = async (req, res) => {
         tdsType: quote.tdsType || '',
         tdsValue: quote.tdsValue ?? null,
         customerDetails: quote.customerDetails,
+        commission: quote.commission || null,
+        creatorRole: quote.creatorRole || 'vendor',
+        creatorUserId: quote.creatorUserId || null,
         pdfUrl: quote.pdfUrl || null,  // Include pdfUrl in the response
         clientId: quote.clientId || null
       };
@@ -632,14 +679,15 @@ const getQuotations = async (req, res) => {
 const getQuotationsStats = async (req, res) => {
   try {
     const { vendorId } = req.query;
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
-    console.log(`📊 Fetching quotation stats - Role: ${userRole}, User ID: ${userId}`);
+    console.log(`📊 Fetching quotation stats - Role: ${userRole}, Owner: ${ownerScope}`);
 
     let quotations = [];
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       // PM gets stats for all quotations
       const params = {
         TableName: WORKSPACE_QUOTATIONS_TABLE
@@ -649,9 +697,9 @@ const getQuotationsStats = async (req, res) => {
       if (Items) {
         quotations = Items.map(item => unmarshall(item));
       }
-    } else if (userRole === 'vendor') {
-      // Vendor gets stats only for their quotations
-      if (!vendorId || false) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      // Owner-scoped stats — vendor sees own; PM/finance/client pass ownerId
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own statistics'
@@ -662,7 +710,7 @@ const getQuotationsStats = async (req, res) => {
         TableName: WORKSPACE_QUOTATIONS_TABLE,
         KeyConditionExpression: 'vendorId = :vendorId',
         ExpressionAttributeValues: {
-          ':vendorId': { S: vendorId }
+          ':vendorId': { S: ownerScope }
         }
       };
       const command = new QueryCommand(params);
@@ -720,11 +768,22 @@ const updateQuotationStatus = async (req, res) => {
     const userRole = req.user?.role;
     const pmId = req.user?.id;
 
-    // Only PMs can update quotation status
-    if (userRole !== 'pm') {
+    // PM/finance actors write workflow statuses; clients may only write their
+    // own decision statuses (approve/reject).
+    const actorRole = req.headers['x-actor-role'];
+    const headerActorId = req.headers['x-actor-id'] || '';
+    const isStaff = userRole === 'pm'
+      || actorRole === 'pm'
+      || actorRole === 'finance'
+      || actorRole === 'cas'
+      || headerActorId.startsWith('FIN-');
+    const isClient = userRole === 'client' || actorRole === 'client';
+    const isAllowed = isStaff
+      || (isClient && ['approved_by_client', 'rejected_by_client'].includes(status));
+    if (!isAllowed) {
       return res.status(403).json({
         success: false,
-        message: 'Only PMs can update quotation status'
+        message: 'Only PM, finance, or the client (decision statuses) can update quotation status'
       });
     }
 
@@ -782,6 +841,59 @@ const updateQuotationStatus = async (req, res) => {
     const result = await dbClient.send(new UpdateItemCommand(updateParams));
     const updatedQuotation = unmarshall(result.Attributes);
 
+    // Canvas PM→Finance hop: mirror the quote into EM's pm_quotes_to_finance
+    // queue so the EM finance dashboard lists it (same row shape as EM's
+    // PMQuoteToFinance.create).
+    if (status === 'sent to finance for review') {
+      const q = updatedQuotation;
+      const now = new Date().toISOString();
+      const financeItem = {
+        quoteId: `PM-FIN-${Date.now()}-${quotationId}`,
+        originalQuoteId: quotationId,
+        quotationId,
+        quotation_number: q.customQuoteId || q.quoteNumber || quotationId,
+        pmId: pmId || req.headers['x-actor-id'] || null,
+        pmName: req.user?.name || 'PM User',
+        projectId: q.projectId || null,
+        vendorId: q.vendorId,
+        vendorName: q.vendorName || null,
+        vendorEmail: q.vendorEmail || null,
+        customer_name: q.customerName || q.customerDetails?.name || '',
+        customer_email: q.customerDetails?.email || '',
+        customer_phone: q.customerDetails?.phone || '',
+        billing_address: q.billingAddress || '',
+        gstin: q.gstin || '',
+        items: q.items || [],
+        subtotal: q.subtotal || '0.00',
+        cgst_amount: q.cgst || '0.00',
+        sgst_amount: q.sgst || '0.00',
+        igst_amount: q.igst || '0.00',
+        total_amount: q.total || '0.00',
+        customer_notes: q.customerNotes || '',
+        type: 'quote',
+        status: 'sent_to_finance',
+        pdfUrl: q.pdfUrl || null,
+        pdfFileName: `${q.customQuoteId || quotationId}.pdf`,
+        sentAt: now,
+        created_date: q.createdAt || now,
+        updated_date: now,
+        due_date: q.dueDate || q.expiryDate || null,
+        payment_terms: q.termsAndConditions || null,
+        amount_paid: '0.00',
+        balance_due: q.total || '0.00',
+        source: 'workspace_canvas'
+      };
+      try {
+        await dbClient.send(new PutItemCommand({
+          TableName: PM_QUOTES_TO_FINANCE_TABLE,
+          Item: marshall(financeItem, { removeUndefinedValues: true })
+        }));
+        console.log(`✅ Mirrored quotation ${quotationId} into pm_quotes_to_finance`);
+      } catch (finErr) {
+        console.error(`⚠️ pm_quotes_to_finance mirror failed for ${quotationId}:`, finErr.message);
+      }
+    }
+
     console.log(`✅ Updated quotation ${quotationId} status to ${status} by PM ${pmId}`);
 
     res.status(200).json({
@@ -795,6 +907,88 @@ const updateQuotationStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update quotation status',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Save item-wise finance commission on a quotation (Finance/PM action).
+ * Writes commissionPercent + clientRate/clientAmount onto each item and a
+ * commission summary onto the row — vendors cannot call this, so the vendor's
+ * quotation record/preview always keeps original rates.
+ * @route PUT /api/workspace/quotations/:quotationId/commission
+ * @access Private (Finance or PM only)
+ */
+const saveQuotationCommission = async (req, res) => {
+  try {
+    const { quotationId } = req.params;
+    const { vendorId, items, commission } = req.body;
+    const userRole = req.user?.role;
+
+    // Commission may only be applied by staff-side actors:
+    //   - PMs (external session or Cognito role 'pm')
+    //   - finance users, identified by a FIN- prefixed user id — taken from the
+    //     verified token identity, or the x-actor-id header the canvas sends
+    //     for FIN- workspace links (?userId=FIN-... carried by ambient auth).
+    // Actor id may come from the verified token OR the x-actor-id header —
+    // external FIN-/CAS links carry a FIN- id over an ambient vendor session.
+    const tokenUserId = req.user?.userId || '';
+    const headerActorId = req.headers['x-actor-id'] || '';
+    const isStaff = userRole === 'pm'
+      || tokenUserId.startsWith('FIN-')
+      || headerActorId.startsWith('FIN-');
+    if (!isStaff) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only PM or a FIN- finance user can apply commission'
+      });
+    }
+
+    if (!vendorId || !quotationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'vendorId and quotationId are required'
+      });
+    }
+
+    const getParams = {
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      KeyConditionExpression: 'vendorId = :vendorId',
+      ExpressionAttributeValues: { ':vendorId': { S: vendorId } }
+    };
+
+    const existing = await dbClient.send(new QueryCommand(getParams));
+    const target = (existing.Items || []).map(unmarshall).find(q => q.quotationId === quotationId);
+
+    if (!target) {
+      return res.status(404).json({ success: false, message: 'Quotation not found' });
+    }
+
+    const updatedQuotation = {
+      ...target,
+      items: Array.isArray(items) ? items : target.items,
+      commission: commission || null,
+      updatedAt: new Date().toISOString()
+    };
+
+    await dbClient.send(new PutItemCommand({
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      Item: marshall(updatedQuotation, { removeUndefinedValues: true })
+    }));
+
+    console.log(`✅ Commission saved on quotation ${quotationId} (total: ${commission?.total ?? 'n/a'})`);
+
+    return res.status(200).json({
+      success: true,
+      data: updatedQuotation,
+      message: 'Commission saved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error saving quotation commission:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save commission',
       error: error.message
     });
   }
@@ -969,11 +1163,11 @@ const deleteQuotation = async (req, res) => {
 
     console.log('🗑️ DELETE QUOTATION - Quotation ID:', quotationId, 'Vendor ID:', vendorId);
 
-    // Only vendors can delete quotations
-    if (userRole !== 'vendor') {
+    // Any workspace actor can delete their own quotations
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can delete quotations'
+        message: 'Only workspace actors can delete quotations'
       });
     }
 
@@ -1305,11 +1499,11 @@ const createInvoice = async (req, res) => {
     // Accept invoice number from multiple possible field names
     const invoiceNumberValue = customInvoiceId || invoiceNumber || invoiceCode || invoiceNo || null;
 
-    // Only vendors can create invoices
-    if (userRole !== 'vendor') {
+    // Any workspace actor can create invoices (scoped to their own id)
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can create invoices'
+        message: 'Only workspace actors can create invoices'
       });
     }
 
@@ -1389,6 +1583,7 @@ const createInvoice = async (req, res) => {
       customInvoiceId: invoiceNumberValue, // Store custom invoice ID for display
       invoiceNumber: invoiceNumberValue, // Also store as invoiceNumber for compatibility
       vendorId,
+      ...getActorIdentity(req),
       customerId,
       customerName: customerName || '',
       invoiceDate: invoiceDate || new Date().toISOString().split('T')[0],
@@ -1459,10 +1654,10 @@ const updateInvoice = async (req, res) => {
     const { vendorId, pdfUrl, status, ...otherFields } = req.body;
     const userRole = req.user?.role;
 
-    if (userRole !== 'vendor') {
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can update invoices'
+        message: 'Only workspace actors can update invoices'
       });
     }
 
@@ -1471,6 +1666,38 @@ const updateInvoice = async (req, res) => {
         success: false,
         message: 'Invoice ID and vendor ID are required'
       });
+    }
+
+    // Preserve finance commission fields on items — vendor edits never carry
+    // clientRate/commissionPercent (vendors can't see them), so a wholesale
+    // items write would wipe commission. Recompute client pricing from the
+    // (possibly updated) base rate/amount using the stored percent.
+    if (Array.isArray(otherFields.items)) {
+      try {
+        const existing = await dbClient.send(new GetItemCommand({
+          TableName: WORKSPACE_INVOICES_TABLE,
+          Key: {
+            vendorId: { S: vendorId },
+            invoiceId: { S: invoiceId }
+          }
+        }));
+        const prevItems = existing.Item ? (unmarshall(existing.Item).items || []) : [];
+        otherFields.items = otherFields.items.map((item, i) => {
+          const prev = prevItems[i];
+          if (!prev || prev.commissionPercent == null || item.commissionPercent != null) return item;
+          const pct = Number(prev.commissionPercent) || 0;
+          const rate = Number(item.rate) || 0;
+          const amount = Number(item.amount) || rate * (Number(item.quantity) || 0);
+          return {
+            ...item,
+            commissionPercent: pct,
+            clientRate: +(rate * (1 + pct / 100)).toFixed(2),
+            clientAmount: +(amount * (1 + pct / 100)).toFixed(2)
+          };
+        });
+      } catch (lookupErr) {
+        console.warn('⚠️ Could not preserve commission on invoice items:', lookupErr?.message);
+      }
     }
 
     const updatedAt = new Date().toISOString();
@@ -1605,11 +1832,11 @@ const createPurchaseOrderFromQuote = async (req, res) => {
     const userRole = req.user?.role;
     const currentVendorId = req.user?.vendorId;
 
-    // Only vendors can create purchase orders
-    if (userRole !== 'vendor') {
+    // Any workspace actor can create purchase orders (scoped to their own id)
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can create purchase orders'
+        message: 'Only workspace actors can create purchase orders'
       });
     }
 
@@ -1682,6 +1909,7 @@ const createPurchaseOrderFromQuote = async (req, res) => {
       customPoId: customPoId || null,
       referenceQuoteNumber: referenceQuoteNumber || null,
       vendorId,
+      ...getActorIdentity(req),
       clientId: clientId || null,
       customerId: customerId || null,
       customerName: customerName || '',
@@ -1817,11 +2045,11 @@ const createCreditNote = async (req, res) => {
     // Accept credit note number from multiple possible field names
     const creditNoteNumberValue = customCreditNoteId || creditNoteNumber || creditNoteCode || creditNoteNo || null;
 
-    // Only vendors can create credit notes
-    if (userRole !== 'vendor') {
+    // Any workspace actor can create credit notes (scoped to their own id)
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can create credit notes'
+        message: 'Only workspace actors can create credit notes'
       });
     }
 
@@ -1896,6 +2124,7 @@ const createCreditNote = async (req, res) => {
       customCreditNoteId: creditNoteNumberValue, // Store custom credit note ID for display
       creditNoteNumber: creditNoteNumberValue, // Also store as creditNoteNumber for compatibility
       vendorId,
+      ...getActorIdentity(req),
       customerId,
       customerName: customerName || '',
       creditNoteDate: creditNoteDate || new Date().toISOString().split('T')[0],
@@ -2021,19 +2250,50 @@ const getInvoices = async (req, res) => {
     // Transform data for frontend
     const transformedInvoices = invoices.map(invoice => ({
       id: invoice.invoiceId,
+      invoiceId: invoice.invoiceId,
+      customInvoiceId: invoice.customInvoiceId || invoice.invoiceNumber || null,
+      invoiceNumber: invoice.invoiceNumber || invoice.customInvoiceId || null,
+      displayInvoiceId: invoice.customInvoiceId || invoice.invoiceNumber || invoice.invoiceId || null,
+      invoiceDate: invoice.invoiceDate || invoice.quoteDate || null,
       date: invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString('en-GB') :
         invoice.createdAt ? new Date(invoice.createdAt).toLocaleDateString('en-GB') : 'N/A',
       customer: invoice.customerName || 'Unknown Customer',
-      totalAmount: invoice.totalAmount ? `₹${parseFloat(invoice.totalAmount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '₹0.00',
+      customerName: invoice.customerName || null,
+      customerDetails: invoice.customerDetails || null,
+      totalAmount: invoice.totalAmount ? `₹${parseFloat(invoice.totalAmount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` :
+        invoice.total ? `₹${parseFloat(invoice.total).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '₹0.00',
+      total: invoice.total ?? invoice.totalAmount ?? 0,
       status: invoice.status ? invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1) : 'Draft',
       vendorId: invoice.vendorId,
       createdAt: invoice.createdAt,
       updatedAt: invoice.updatedAt,
       items: invoice.items || [],
-      subTotal: invoice.subTotal,
+      subTotal: invoice.subTotal ?? invoice.subtotal ?? 0,
       totalTax: invoice.totalTax,
+      totalCgst: invoice.totalCgst ?? invoice.cgst ?? 0,
+      totalSgst: invoice.totalSgst ?? invoice.sgst ?? 0,
+      totalIgst: invoice.totalIgst ?? invoice.igst ?? 0,
+      discount: invoice.discount || null,
+      tdsType: invoice.tdsType || '',
+      tdsValue: invoice.tdsValue ?? null,
+      amountWithheld: invoice.amountWithheld,
+      customerNotes: invoice.customerNotes,
+      termsAndConditions: invoice.termsAndConditions,
+      referenceQuoteNumber: invoice.referenceQuoteNumber || null,
+      referencePoNumber: invoice.referencePoNumber || null,
+      expiryDate: invoice.expiryDate,
       paymentStatus: invoice.paymentStatus || 'pending',
-      dueDate: invoice.dueDate
+      dueDate: invoice.dueDate,
+      projectName: invoice.projectName,
+      projectId: invoice.projectId,
+      workspaceId: invoice.workspaceId || null,
+      workspaceName: invoice.workspaceName,
+      taskId: invoice.taskId,
+      taskName: invoice.taskName,
+      subtaskId: invoice.subtaskId,
+      subtaskName: invoice.subtaskName,
+      pdfUrl: invoice.pdfUrl || null,
+      clientId: invoice.clientId || null
     }));
 
     res.status(200).json({
@@ -2069,11 +2329,11 @@ const createCustomer = async (req, res) => {
     const { vendorId, customerData } = req.body;
     const userRole = req.user?.role;
 
-    // Only vendors can create customers
-    if (userRole !== 'vendor') {
+    // Any workspace actor can create customers (scoped to their own id)
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can create customers'
+        message: 'Only workspace actors can create customers'
       });
     }
 
@@ -2090,6 +2350,7 @@ const createCustomer = async (req, res) => {
     const customer = {
       customerId,
       vendorId,
+      ...getActorIdentity(req),
       ...customerData,
       status: customerData.status || 'active',
       createdAt,
@@ -2129,14 +2390,15 @@ const createCustomer = async (req, res) => {
 const getCustomers = async (req, res) => {
   try {
     const { vendorId } = req.query;
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
-    console.log(`📋 Fetching customers - Role: ${userRole}, User ID: ${userId}`);
+    console.log(`📋 Fetching customers - Role: ${userRole}, Owner: ${ownerScope}`);
 
     let customers = [];
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       // PM can see all customers from all vendors
       const params = {
         TableName: WORKSPACE_CUSTOMERS_TABLE
@@ -2146,9 +2408,9 @@ const getCustomers = async (req, res) => {
       if (Items) {
         customers = Items.map(item => unmarshall(item));
       }
-    } else if (userRole === 'vendor') {
-      // Vendor can only see their own customers
-      if (!vendorId || false) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      // Owner-scoped fetch — vendor sees own; PM/finance/client pass ownerId
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own customers'
@@ -2159,7 +2421,7 @@ const getCustomers = async (req, res) => {
         TableName: WORKSPACE_CUSTOMERS_TABLE,
         KeyConditionExpression: 'vendorId = :vendorId',
         ExpressionAttributeValues: {
-          ':vendorId': { S: vendorId }
+          ':vendorId': { S: ownerScope }
         }
       };
       const command = new QueryCommand(params);
@@ -2210,6 +2472,7 @@ const getCustomerById = async (req, res) => {
   try {
     const { customerId } = req.params;
     const { vendorId } = req.query;
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
@@ -2222,7 +2485,7 @@ const getCustomerById = async (req, res) => {
 
     let customer = null;
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       // PM can get any customer
       const params = {
         TableName: WORKSPACE_CUSTOMERS_TABLE,
@@ -2236,9 +2499,9 @@ const getCustomerById = async (req, res) => {
       if (Items && Items.length > 0) {
         customer = unmarshall(Items[0]);
       }
-    } else if (userRole === 'vendor') {
-      // Vendor can only get their own customers
-      if (!vendorId || false) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      // Owner-scoped — vendor sees own; other roles pass ownerId
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own customers'
@@ -2248,7 +2511,7 @@ const getCustomerById = async (req, res) => {
       const params = {
         TableName: WORKSPACE_CUSTOMERS_TABLE,
         Key: marshall({
-          vendorId: vendorId,
+          vendorId: ownerScope,
           customerId: customerId
         })
       };
@@ -2301,11 +2564,11 @@ const updateCustomer = async (req, res) => {
       });
     }
 
-    // Only vendors can update their own customers
-    if (userRole !== 'vendor' || false) {
+    // Any workspace actor can update their own customers
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Vendors can only update their own customers'
+        message: 'Actors can only update their own customers'
       });
     }
 
@@ -2479,11 +2742,11 @@ const createItem = async (req, res) => {
     const { vendorId, name, description, type, unit, rate, hsn, sac, gst, status } = req.body;
     const userRole = req.user?.role;
 
-    // Only vendors can create items
-    if (userRole !== 'vendor') {
+    // Any workspace actor can create items (scoped to their own id)
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can create items'
+        message: 'Only workspace actors can create items'
       });
     }
 
@@ -2500,6 +2763,7 @@ const createItem = async (req, res) => {
     const item = {
       itemId,
       vendorId,
+      ...getActorIdentity(req),
       name,
       description: description || '',
       type: type || 'Product',
@@ -2546,14 +2810,15 @@ const createItem = async (req, res) => {
 const getItems = async (req, res) => {
   try {
     const { vendorId } = req.query;
+    const ownerScope = req.query.ownerId || vendorId;
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
-    console.log(`📋 Fetching items - Role: ${userRole}, User ID: ${userId}`);
+    console.log(`📋 Fetching items - Role: ${userRole}, Owner: ${ownerScope}`);
 
     let items = [];
 
-    if (userRole === 'pm') {
+    if (userRole === 'pm' && !ownerScope) {
       // PM can see all items from all vendors
       const params = {
         TableName: WORKSPACE_ITEMS_TABLE
@@ -2563,9 +2828,9 @@ const getItems = async (req, res) => {
       if (Items) {
         items = Items.map(item => unmarshall(item));
       }
-    } else if (userRole === 'vendor') {
-      // Vendor can only see their own items
-      if (!vendorId || false) {
+    } else if (userRole === 'vendor' || ownerScope) {
+      // Owner-scoped — vendor sees own; other roles pass ownerId
+      if (!ownerScope) {
         return res.status(403).json({
           success: false,
           message: 'Vendors can only access their own items'
@@ -2576,7 +2841,7 @@ const getItems = async (req, res) => {
         TableName: WORKSPACE_ITEMS_TABLE,
         KeyConditionExpression: 'vendorId = :vendorId',
         ExpressionAttributeValues: {
-          ':vendorId': { S: vendorId }
+          ':vendorId': { S: ownerScope }
         }
       };
       const command = new QueryCommand(params);
@@ -2633,11 +2898,11 @@ const updateItem = async (req, res) => {
     const { vendorId, name, description, type, unit, rate, hsn, sac, gst, status } = req.body;
     const userRole = req.user?.role;
 
-    // Only vendors can update items
-    if (userRole !== 'vendor') {
+    // Any workspace actor can update their own items
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can update items'
+        message: 'Only workspace actors can update items'
       });
     }
 
@@ -2704,11 +2969,11 @@ const deleteItem = async (req, res) => {
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
-    // Only vendors can delete items
-    if (userRole !== 'vendor') {
+    // Any workspace actor can delete their own items
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can delete items'
+        message: 'Only workspace actors can delete items'
       });
     }
 
@@ -2777,11 +3042,11 @@ const updateQuotationPdfUrl = async (req, res) => {
     const userRole = req.user?.role;
     const vendorId = req.user?.vendorId;
 
-    // Only vendors can update quotation PDFs
-    if (userRole !== 'vendor') {
+    // Any workspace actor can update their own quotation PDFs
+    if (!DOC_MANAGER_ROLES.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Only vendors can update quotation PDFs'
+        message: 'Only workspace actors can update quotation PDFs'
       });
     }
 
@@ -2836,9 +3101,8 @@ const updateQuotationPdfUrl = async (req, res) => {
 const reviewPurchaseOrder = async (req, res) => {
   try {
     const { poId } = req.params;
-    const userRole = req.user?.role;
 
-    if (userRole !== 'pm') {
+    if (!isPmActor(req)) {
       return res.status(403).json({
         success: false,
         message: 'Only PMs can review purchase orders'
@@ -2852,10 +3116,11 @@ const reviewPurchaseOrder = async (req, res) => {
       });
     }
 
-    // Scan WORKSPACE_PURCHASE_ORDERS_TABLE to find the PO
+    // Scan WORKSPACE_PURCHASE_ORDERS_TABLE to find the PO (accepts
+    // customPoId / purchaseOrderNumber / id aliases too)
     const params = {
       TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'purchaseOrderId = :poId',
+      FilterExpression: 'purchaseOrderId = :poId OR customPoId = :poId OR purchaseOrderNumber = :poId OR id = :poId',
       ExpressionAttributeValues: marshall({
         ':poId': poId
       })
@@ -2899,10 +3164,9 @@ const sendPurchaseOrderToVendor = async (req, res) => {
   try {
     const { poId } = req.params;
     const { vendorId, commissionToRemove } = req.body;
-    const userRole = req.user?.role;
-    const pmId = req.user?.id;
+    const pmId = req.user?.id || req.headers['x-actor-id'];
 
-    if (userRole !== 'pm') {
+    if (!isPmActor(req)) {
       return res.status(403).json({
         success: false,
         message: 'Only PMs can send purchase orders to vendors'
@@ -2916,10 +3180,11 @@ const sendPurchaseOrderToVendor = async (req, res) => {
       });
     }
 
-    // Find the PO
+    // Find the PO — canvas nodes and lists can carry customPoId or the
+    // display number instead of the raw purchaseOrderId key.
     const scanParams = {
       TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'purchaseOrderId = :poId',
+      FilterExpression: 'purchaseOrderId = :poId OR customPoId = :poId OR purchaseOrderNumber = :poId OR id = :poId',
       ExpressionAttributeValues: marshall({
         ':poId': poId
       })
@@ -3049,10 +3314,11 @@ const vendorRespondToPurchaseOrder = async (req, res) => {
       });
     }
 
-    // Find the PO
+    // Find the PO — canvas nodes and lists can carry customPoId or the
+    // display number instead of the raw purchaseOrderId key.
     const scanParams = {
       TableName: WORKSPACE_PURCHASE_ORDERS_TABLE,
-      FilterExpression: 'purchaseOrderId = :poId',
+      FilterExpression: 'purchaseOrderId = :poId OR customPoId = :poId OR purchaseOrderNumber = :poId OR id = :poId',
       ExpressionAttributeValues: marshall({
         ':poId': poId
       })
@@ -3180,15 +3446,27 @@ const getPOStatusByQuotation = async (req, res) => {
  */
 const savePmPOFile = async (req, res) => {
   try {
+    if (!isPmActor(req)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only PMs can generate PO files'
+      });
+    }
     const { quotationId } = req.params;
     const {
       items,
       subtotal,
+      cgst,
+      sgst,
+      igst,
       gst,
       commissionRemoved,
       total,
       customerName,
       billingAddress,
+      shipTo,
+      poNumber,
+      poDate,
       quotationDate
     } = req.body;
 
@@ -3223,11 +3501,18 @@ const savePmPOFile = async (req, res) => {
     try {
       pdfBuffer = await generatePmPOPdf({
         quotationId: quotation.quotationId || quotation.customQuoteId,
+        poNumber: poNumber || `PMPO-${quotation.customQuoteId || quotation.quotationId || quotationId}`,
+        poDate,
+        referenceQuote: quotation.customQuoteId || quotation.quoteNumber || quotation.quotationId,
         quotationDate: quotationDate || quotation.quotationDate,
         customerName: customerName || quotation.customerName,
-        billingAddress: billingAddress || quotation.billingAddress,
+        billingAddress: billingAddress || quotation.billingAddress || quotation.customerDetails?.address,
+        shipTo: shipTo || quotation.shipTo || quotation.shippingAddress,
         items: items || quotation.items,
         subtotal: subtotal || quotation.subtotal,
+        cgst: cgst ?? quotation.cgst ?? 0,
+        sgst: sgst ?? quotation.sgst ?? 0,
+        igst: igst ?? quotation.igst ?? 0,
         gst: gst || (parseFloat(quotation.cgst || 0) + parseFloat(quotation.sgst || 0) + parseFloat(quotation.igst || 0)),
         commissionRemoved: commissionRemoved || 0,
         total: total || quotation.total
@@ -3241,21 +3526,15 @@ const savePmPOFile = async (req, res) => {
       });
     }
 
-    // Upload PDF to S3
-    const s3Key = `pm-po/${quotationId}/${Date.now()}-pm-po.pdf`;
+    // Upload PDF to S3 (positional signature: buffer, name, type, folder)
     let pmPoUrl;
     try {
-      pmPoUrl = await uploadFileToS3({
-        bucket: process.env.S3_BUCKET || 'workspace-documents-025775692918',
-        key: s3Key,
-        body: pdfBuffer,
-        contentType: 'application/pdf',
-        metadata: {
-          quotationId,
-          generatedBy: 'PM',
-          generatedAt: new Date().toISOString()
-        }
-      });
+      pmPoUrl = await uploadFileToS3(
+        pdfBuffer,
+        `pm-po-${quotationId}-${Date.now()}.pdf`,
+        'application/pdf',
+        `pm-po/${quotationId}`
+      );
     } catch (uploadError) {
       console.error('❌ Error uploading PM PO to S3:', uploadError);
       return res.status(500).json({
@@ -3281,7 +3560,7 @@ const savePmPOFile = async (req, res) => {
 
     const updateParams = {
       TableName: WORKSPACE_QUOTATIONS_TABLE,
-      Item: marshall(updatedQuotation)
+      Item: marshall(updatedQuotation, { removeUndefinedValues: true })
     };
 
     await dbClient.send(new PutItemCommand(updateParams));
@@ -3310,7 +3589,13 @@ const savePmPOFile = async (req, res) => {
 
       const purchaseOrder = {
         purchaseOrderId,
-        purchaseOrderNumber: `PMPO-${quotation.customQuoteId || quotation.quotationId || quotationId}`,
+        // EM 'pm-create' compatible fields — same row shape the PM dashboard writes
+        customPoId: purchaseOrderId,
+        referenceQuoteId: quotationId,
+        poSource: 'quotation',
+        pdfFileName: `${poNumber || `PMPO-${quotation.customQuoteId || quotation.quotationId || quotationId}`}.pdf`,
+        createdBy: 'pm',
+        purchaseOrderNumber: poNumber || `PMPO-${quotation.customQuoteId || quotation.quotationId || quotationId}`,
         referenceQuoteNumber:
           quotation.customQuoteId || quotation.quoteNumber || quotation.quotationId || null,
         vendorId: quotation.vendorId,
@@ -3318,12 +3603,12 @@ const savePmPOFile = async (req, res) => {
         customerName: customerName || quotation.customerName || '',
         customerDetails: quotation.customerDetails || {},
         quotationId,
-        purchaseOrderDate: nowIso.split('T')[0],
+        purchaseOrderDate: poDate || nowIso.split('T')[0],
         items: items || quotation.items || [],
         subtotal: subtotal ?? quotation.subtotal ?? 0,
-        cgst: quotation.cgst ?? 0,
-        sgst: quotation.sgst ?? 0,
-        igst: quotation.igst ?? 0,
+        cgst: cgst ?? quotation.cgst ?? 0,
+        sgst: sgst ?? quotation.sgst ?? 0,
+        igst: igst ?? quotation.igst ?? 0,
         gst: gst ?? 0,
         total: total ?? quotation.total ?? 0,
         commissionRemoved: commissionRemoved || 0,
@@ -3387,6 +3672,150 @@ const savePmPOFile = async (req, res) => {
 };
 
 /**
+ * Upload a client-sent PO file onto an approved quotation.
+ * Mirrors EM's client flow: client approves the commissioned quotation, then
+ * uploads their PO → clientPOFile stored on the row → the PM PO check/raise
+ * flow picks it up from there (createPurchaseOrderFromQuote requires the
+ * auto-check when clientPOFile is present).
+ * @route POST /api/workspace/quotations/:quotationId/upload-client-po
+ * @access Private (client or workspace actor)
+ */
+const uploadClientPOFile = async (req, res) => {
+  try {
+    const { quotationId } = req.params;
+    const { vendorId } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'PO file is required'
+      });
+    }
+
+    // Resolve the quotation — key is (quotationId, vendorId); scan for the id
+    // when vendorId isn't supplied (client uploads may not know the owner key).
+    const scanResult = await dbClient.send(new ScanCommand({
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      FilterExpression: 'quotationId = :qid OR customQuoteId = :qid',
+      ExpressionAttributeValues: marshall({ ':qid': quotationId })
+    }));
+
+    const quotation = (scanResult.Items || [])
+      .map(unmarshall)
+      .find((q) => !vendorId || q.vendorId === vendorId) || unmarshall(scanResult.Items?.[0] || {});
+
+    if (!quotation?.quotationId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quotation not found'
+      });
+    }
+
+    // Upload the PO file to S3 (positional signature: buffer, name, type, folder)
+    const safeName = (req.file.originalname || 'client-po.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const poUrl = await uploadFileToS3(
+      req.file.buffer,
+      safeName,
+      req.file.mimetype || 'application/pdf',
+      `client-po/${quotation.quotationId}`
+    );
+
+    const updatedAt = new Date().toISOString();
+    // Keep status at 'approved_by_client' — EM's PM feed only fetches
+    // approved/approved_by_client/etc., and overwriting it with 'po_uploaded'
+    // makes the quote vanish from the "Quotes approved by client" list.
+    // The upload state lives on its own field instead.
+    const updateParams = {
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      Key: marshall({
+        quotationId: quotation.quotationId,
+        vendorId: quotation.vendorId
+      }),
+      UpdateExpression:
+        'SET clientPOFile = :file, clientPOFileName = :name, clientPOUploadedAt = :at, poUploadStatus = :poStatus, poType = :poType, updatedAt = :updatedAt',
+      ExpressionAttributeValues: marshall({
+        ':file': poUrl,
+        ':name': safeName,
+        ':at': updatedAt,
+        ':poStatus': 'po_uploaded',
+        ':poType': 'client',
+        ':updatedAt': updatedAt
+      })
+    };
+
+    await dbClient.send(new UpdateItemCommand(updateParams));
+
+    console.log(`✅ Client PO uploaded for quotation ${quotation.quotationId}: ${poUrl}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Client PO uploaded successfully',
+      data: {
+        quotationId: quotation.quotationId,
+        clientPOFile: poUrl,
+        clientPOFileName: safeName,
+        poUploadStatus: 'po_uploaded'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error uploading client PO:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload client PO',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Client chose "use our PO" — mark poType 'system' so PM raises the
+ * system-generated PO instead of a client-uploaded file (EM client flow).
+ * @route POST /api/workspace/quotations/:quotationId/use-system-po
+ */
+const useSystemPO = async (req, res) => {
+  try {
+    const { quotationId } = req.params;
+    const { vendorId } = req.body || {};
+
+    const scanResult = await dbClient.send(new ScanCommand({
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      FilterExpression: 'quotationId = :qid OR customQuoteId = :qid',
+      ExpressionAttributeValues: marshall({ ':qid': quotationId })
+    }));
+
+    const items = scanResult.Items || [];
+    const quotation = items.map(unmarshall)
+      .find((q) => !vendorId || q.vendorId === vendorId)
+      || (items.length ? unmarshall(items[0]) : null);
+
+    if (!quotation?.quotationId) {
+      return res.status(404).json({ success: false, message: 'Quotation not found' });
+    }
+
+    const updatedAt = new Date().toISOString();
+    await dbClient.send(new UpdateItemCommand({
+      TableName: WORKSPACE_QUOTATIONS_TABLE,
+      Key: marshall({ quotationId: quotation.quotationId, vendorId: quotation.vendorId }),
+      UpdateExpression: 'SET poType = :poType, poChoiceAt = :at, updatedAt = :updatedAt',
+      ExpressionAttributeValues: marshall({
+        ':poType': 'system',
+        ':at': updatedAt,
+        ':updatedAt': updatedAt
+      })
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: 'Client opted for system-generated PO',
+      data: { quotationId: quotation.quotationId, poType: 'system' }
+    });
+  } catch (error) {
+    console.error('❌ Error setting system PO choice:', error);
+    res.status(500).json({ success: false, message: 'Failed to record PO choice', error: error.message });
+  }
+};
+
+/**
  * Generate PM PO PDF with adjusted rates and GST
  */
 const generatePmPOPdf = async (poData) => {
@@ -3404,94 +3833,127 @@ const generatePmPOPdf = async (poData) => {
         reject(error);
       });
 
-      // Header
-      doc.fontSize(20).font('Helvetica-Bold').text('PURCHASE ORDER (PM APPROVED)', { align: 'center' });
-      doc.fontSize(10).font('Helvetica').text('Modified by Project Manager', { align: 'center' });
-      doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString()}`, { align: 'center' });
-      doc.moveDown();
+      const pageW = doc.page.width;   // 595 for A4
+      const margin = 50;
+      const contentW = pageW - margin * 2;
+      const fmt = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+      const fmtAddr = (addr) => {
+        if (!addr) return '';
+        if (typeof addr === 'string') return addr;
+        return [addr.line1, addr.line2, addr.street, addr.address, addr.city, addr.state, addr.pincode || addr.zip, addr.country]
+          .filter(Boolean).join('\n');
+      };
+      const itemGstPct = (item) =>
+        parseFloat(item.gstRate ?? item.gst ?? 0) ||
+        (parseFloat(item.cgstRate ?? item.cgst ?? 0) + parseFloat(item.sgstRate ?? item.sgst ?? 0) + parseFloat(item.igstRate ?? item.igst ?? 0));
 
-      // PO Details
-      doc.fontSize(10).font('Helvetica-Bold').text('PO DETAILS', { underline: true });
-      doc.fontSize(9).font('Helvetica');
-      doc.text(`PO Number: ${poData.quotationId}`, { indent: 20 });
-      doc.text(`Date: ${new Date(poData.quotationDate).toLocaleDateString()}`, { indent: 20 });
-      doc.text(`Customer: ${poData.customerName}`, { indent: 20 });
-      doc.moveDown();
+      // ---------- Header: PO title left, company block right ----------
+      let y = margin;
+      doc.fontSize(24).font('Helvetica-Bold').fillColor('#111111')
+        .text('PURCHASE ORDER', margin, y);
+      doc.fontSize(9).font('Helvetica').fillColor('#555555')
+        .text(`PO #: ${poData.poNumber || `PMPO-${poData.quotationId}`}`, margin, y + 32)
+        .text(`Reference Quote: ${poData.referenceQuote || poData.quotationId}`, margin, y + 45)
+        .text(`Date: ${new Date(poData.poDate || Date.now()).toLocaleDateString('en-IN')}`, margin, y + 58);
 
-      // Customer Address
-      doc.fontSize(10).font('Helvetica-Bold').text('BILLING ADDRESS', { underline: true });
-      doc.fontSize(9).font('Helvetica');
-      doc.text(poData.billingAddress || 'N/A', { indent: 20, width: 400 });
-      doc.moveDown();
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#111111')
+        .text('Caasdi Global', margin, y + 4, { width: contentW, align: 'right' });
+      doc.fontSize(8).font('Helvetica').fillColor('#555555')
+        .text('corporate@caasdiglobal.in', margin, y + 22, { width: contentW, align: 'right' })
+        .text('262, 80 Feet Road, Srinivasa Nagar', margin, y + 33, { width: contentW, align: 'right' })
+        .text('Banashankari Stage 1, Bengaluru, Karnataka 560050', margin, y + 44, { width: contentW, align: 'right' })
+        .text('GSTIN: 29AATFC6608I2ZB', margin, y + 55, { width: contentW, align: 'right' });
 
-      // Items Table
-      doc.fontSize(10).font('Helvetica-Bold').text('LINE ITEMS', { underline: true });
-      doc.moveDown(0.5);
+      y += 80;
+      doc.moveTo(margin, y).lineTo(pageW - margin, y).lineWidth(1.5).strokeColor('#cccccc').stroke();
+      y += 16;
 
-      // Table header
-      const startX = 50;
-      const rowHeight = 25;
-      let currentY = doc.y;
+      // ---------- Bill To / Ship To ----------
+      const colW = contentW / 2;
+      doc.fontSize(9).font('Helvetica-Bold').fillColor('#111111').text('Bill To', margin, y);
+      doc.text('Ship To', margin + colW, y);
+      y += 14;
+      doc.fontSize(8).font('Helvetica').fillColor('#333333');
+      const billTo = [poData.customerName, fmtAddr(poData.billingAddress)].filter(Boolean).join('\n');
+      const shipTo = [poData.customerName, fmtAddr(poData.shipTo || poData.billingAddress)].filter(Boolean).join('\n');
+      doc.text(billTo || '—', margin, y, { width: colW - 20 });
+      const billH = doc.y - y;
+      doc.text(shipTo || '—', margin + colW, y, { width: colW - 20 });
+      y += Math.max(billH, doc.y - y) + 18;
 
-      doc.fontSize(9).font('Helvetica-Bold');
-      doc.text('Description', startX, currentY, { width: 150 });
-      doc.text('Qty', startX + 160, currentY, { width: 50, align: 'right' });
-      doc.text('Rate (₹)', startX + 220, currentY, { width: 80, align: 'right' });
-      doc.text('GST %', startX + 310, currentY, { width: 60, align: 'right' });
-      doc.text('Amount (₹)', startX + 380, currentY, { width: 80, align: 'right' });
+      // ---------- Items table ----------
+      const cols = [
+        { label: '#', x: margin, w: 20, align: 'left' },
+        { label: 'Item & Description', x: margin + 24, w: 160, align: 'left' },
+        { label: 'HSN/SAC', x: margin + 188, w: 55, align: 'left' },
+        { label: 'Qty', x: margin + 247, w: 35, align: 'center' },
+        { label: 'Rate', x: margin + 286, w: 60, align: 'right' },
+        { label: 'CGST', x: margin + 350, w: 42, align: 'center' },
+        { label: 'SGST', x: margin + 396, w: 42, align: 'center' },
+        { label: 'Amount', x: margin + 442, w: contentW - 442, align: 'right' },
+      ];
 
-      currentY += rowHeight;
-      doc.moveTo(startX, currentY).lineTo(500, currentY).stroke();
+      doc.fontSize(8).font('Helvetica-Bold').fillColor('#111111');
+      cols.forEach((c) => doc.text(c.label, c.x, y, { width: c.w, align: c.align }));
+      y += 14;
+      doc.moveTo(margin, y).lineTo(pageW - margin, y).lineWidth(1).strokeColor('#cccccc').stroke();
+      y += 6;
 
-      // Table rows
-      doc.fontSize(8).font('Helvetica');
-      (poData.items || []).forEach((item) => {
-        doc.text((item.description || 'Item').substring(0, 20), startX, currentY, { width: 150 });
-        doc.text(item.quantity || '0', startX + 160, currentY, { width: 50, align: 'right' });
-        doc.text(`₹${parseFloat(item.rate || 0).toFixed(2)}`, startX + 220, currentY, { width: 80, align: 'right' });
-        doc.text(`${parseFloat(item.gst || 0).toFixed(1)}%`, startX + 310, currentY, { width: 60, align: 'right' });
-        doc.text(`₹${parseFloat(item.amount || 0).toFixed(2)}`, startX + 380, currentY, { width: 80, align: 'right' });
-        currentY += rowHeight;
+      (poData.items || []).forEach((item, idx) => {
+        // Page break guard
+        if (y > doc.page.height - 140) { doc.addPage(); y = margin; }
+        const cgstP = parseFloat(item.cgstRate ?? item.cgst ?? 0) || 0;
+        const sgstP = parseFloat(item.sgstRate ?? item.sgst ?? 0) || 0;
+        const gstOnly = itemGstPct(item);
+        const rowY = y;
+        doc.fontSize(8).font('Helvetica').fillColor('#222222');
+        doc.text(String(idx + 1), cols[0].x, rowY, { width: cols[0].w });
+        doc.text(item.description || item.itemName || `Item ${idx + 1}`, cols[1].x, rowY, { width: cols[1].w });
+        const descH = doc.y - rowY;
+        doc.text(item.hsn || item.hsnCode || '—', cols[2].x, rowY, { width: cols[2].w });
+        doc.text(String(item.quantity ?? 0), cols[3].x, rowY, { width: cols[3].w, align: 'center' });
+        doc.text(fmt(item.rate), cols[4].x, rowY, { width: cols[4].w, align: 'right' });
+        doc.text(cgstP ? `${cgstP}%` : gstOnly ? `${(gstOnly / 2).toFixed(1)}%` : '—', cols[5].x, rowY, { width: cols[5].w, align: 'center' });
+        doc.text(sgstP ? `${sgstP}%` : gstOnly ? `${(gstOnly / 2).toFixed(1)}%` : '—', cols[6].x, rowY, { width: cols[6].w, align: 'center' });
+        doc.text(fmt(item.amount ?? (Number(item.quantity || 0) * Number(item.rate || 0))), cols[7].x, rowY, { width: cols[7].w, align: 'right' });
+        y = rowY + Math.max(descH, 12) + 6;
+        doc.moveTo(margin, y).lineTo(pageW - margin, y).lineWidth(0.5).strokeColor('#eeeeee').stroke();
+        y += 6;
       });
 
-      doc.moveTo(startX, currentY).lineTo(500, currentY).stroke();
-      currentY += 10;
+      // ---------- Totals block (right-aligned) ----------
+      y += 8;
+      const labelX = pageW - margin - 200;
+      const valX = pageW - margin - 100;
+      const totRow = (label, value, opts = {}) => {
+        doc.fontSize(opts.big ? 11 : 8).font(opts.bold ? 'Helvetica-Bold' : 'Helvetica')
+          .fillColor(opts.color || '#333333')
+          .text(label, labelX, y, { width: 95, align: 'right' })
+          .text(value, valX, y, { width: 100, align: 'right' });
+        y += opts.big ? 20 : 14;
+      };
 
-      // Totals
-      doc.fontSize(9).font('Helvetica-Bold');
-      const rightCol = 380;
+      const cgstAmt = parseFloat(poData.cgst ?? 0) || (poData.gst ? parseFloat(poData.gst) / 2 : 0);
+      const sgstAmt = parseFloat(poData.sgst ?? 0) || (poData.gst ? parseFloat(poData.gst) / 2 : 0);
+      const igstAmt = parseFloat(poData.igst ?? 0) || 0;
 
-      doc.text('Subtotal:', rightCol, currentY, { width: 80 });
-      doc.text(`₹${parseFloat(poData.subtotal || 0).toFixed(2)}`, rightCol + 80, currentY, { width: 80, align: 'right' });
-      currentY += 20;
+      totRow('Sub Total', fmt(poData.subtotal), { bold: true });
+      if (cgstAmt) totRow('CGST', fmt(cgstAmt));
+      if (sgstAmt) totRow('SGST', fmt(sgstAmt));
+      if (igstAmt) totRow('IGST', fmt(igstAmt));
+      if (!cgstAmt && !sgstAmt && !igstAmt && poData.gst) totRow('GST', fmt(poData.gst));
+      y += 2;
+      doc.moveTo(labelX, y).lineTo(pageW - margin, y).lineWidth(1).strokeColor('#cccccc').stroke();
+      y += 8;
+      totRow('Total', fmt(poData.total), { big: true, bold: true, color: '#6d28d9' });
 
-      doc.text('GST:', rightCol, currentY, { width: 80 });
-      doc.text(`₹${parseFloat(poData.gst || 0).toFixed(2)}`, rightCol + 80, currentY, { width: 80, align: 'right' });
-      currentY += 20;
-
-      if (poData.commissionRemoved > 0) {
-        doc.fillColor('red');
-        doc.text('Commission Removed:', rightCol, currentY, { width: 80 });
-        doc.text(`-₹${parseFloat(poData.commissionRemoved).toFixed(2)}`, rightCol + 80, currentY, { width: 80, align: 'right' });
-        currentY += 20;
-      }
-
-      doc.moveTo(rightCol - 20, currentY).lineTo(500, currentY).stroke();
-      currentY += 10;
-
-      doc.fillColor('black');
-      doc.fontSize(12).font('Helvetica-Bold');
-      doc.text('TOTAL:', rightCol, currentY, { width: 80 });
-      doc.text(`₹${parseFloat(poData.total || 0).toFixed(2)}`, rightCol + 80, currentY, { width: 80, align: 'right' });
-      currentY += 30;
-
-      // Notes
-      doc.fontSize(9).font('Helvetica-Bold');
-      doc.text('PM NOTES:', { underline: true });
-      doc.fontSize(8).font('Helvetica');
-      doc.text('This PO has been reviewed and modified by the Project Manager.', { width: 450, indent: 20 });
-      doc.text('Commission has been removed as per PM approval process.', { width: 450, indent: 20 });
-      doc.text('Please ensure rates and GST amounts are applied correctly.', { width: 450, indent: 20 });
+      // ---------- Signature ----------
+      y += 40;
+      if (y > doc.page.height - 100) { doc.addPage(); y = margin; }
+      doc.fontSize(8).font('Helvetica').fillColor('#555555')
+        .text('Authorized Signature', pageW - margin - 150, y + 30, { width: 150, align: 'center' });
+      doc.fontSize(10).font('Helvetica-Bold').fillColor('#111111')
+        .text('Caasdi Global', pageW - margin - 150, y + 45, { width: 150, align: 'center' });
 
       doc.end();
     } catch (error) {
@@ -3508,9 +3970,12 @@ export {
   updateQuotation,
   updateQuotationStatus,
   sendQuotationToPM,
+  saveQuotationCommission,
   deleteQuotation,
   updateQuotationPdfUrl,
   savePmPOFile,
+  uploadClientPOFile,
+  useSystemPO,
 
   // Invoices
   createInvoice,

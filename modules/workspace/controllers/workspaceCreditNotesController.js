@@ -14,21 +14,24 @@ const creditNotesByVendorTable = 'workspace_credit_notes';
 const getWorkspaceCreditNotes = async (req, res) => {
   try {
     const { vendorId } = req.query;
+    // ownerId scopes to the document owner for ANY role — vendorId doubles
+    // as the owner key, so PM/finance/client manage their own credit notes.
+    const ownerScope = req.query.ownerId || vendorId;
 
-    if (!vendorId) {
+    if (!ownerScope) {
       return res.status(400).json({ 
         success: false, 
         message: 'Vendor ID is required' 
       });
     }
 
-    console.log('📋 Fetching workspace credit notes for vendor:', vendorId);
+    console.log('📋 Fetching workspace credit notes for owner:', ownerScope);
 
     const params = {
       TableName: creditNotesByVendorTable,
       FilterExpression: 'vendorId = :vendorId',
       ExpressionAttributeValues: {
-        ':vendorId': { S: vendorId }
+        ':vendorId': { S: ownerScope }
       }
     };
 
@@ -62,6 +65,8 @@ const getWorkspaceCreditNotes = async (req, res) => {
                      creditNote.totalAmount ? `₹${parseFloat(creditNote.totalAmount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '₹0.00',
         status: creditNote.status ? creditNote.status.charAt(0).toUpperCase() + creditNote.status.slice(1) : 'Draft',
         vendorId: creditNote.vendorId,
+        creatorRole: creditNote.creatorRole || 'vendor',
+        creatorUserId: creditNote.creatorUserId || null,
         createdAt: creditNote.createdAt,
         updatedAt: creditNote.updatedAt,
         // Additional fields from the actual structure
