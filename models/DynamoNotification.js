@@ -145,16 +145,38 @@ export const getNotificationsForUser = async (userId, userType = 'vendor', optio
         }
       }));
       
+      // Also merge real notification records written to the `notifications`
+      // table (workspace/calendar reminders, mentions, etc.) — historically
+      // this read path only scanned leads so those never surfaced in the UI.
+      const notifParams = {
+        TableName: NOTIFICATIONS_TABLE,
+        FilterExpression: includeRead
+          ? 'userId = :uid'
+          : 'userId = :uid AND isRead = :unread',
+        ExpressionAttributeValues: includeRead
+          ? { ':uid': userId }
+          : { ':uid': userId, ':unread': false },
+      };
+      const notifResult = await dynamoDB.scan(notifParams).promise();
+      const stored = (notifResult.Items || []).map((n) => ({
+        ...n,
+        _id: n.notificationId,
+      }));
+
+      const merged = [...notifications, ...stored].sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      );
+
       // Format the response
       const response = {
-        notifications: notifications.map(notification => ({
+        notifications: merged.map(notification => ({
           ...notification,
           _id: notification.notificationId // Add _id field for frontend compatibility
         })),
-        count: notifications.length
+        count: merged.length
       };
-      
-      console.log(`DynamoNotification: Returning ${response.count} lead notifications`);
+
+      console.log(`DynamoNotification: Returning ${response.count} notifications (${notifications.length} leads + ${stored.length} stored)`);
       
       // Add pagination token if there are more results
       if (result.LastEvaluatedKey) {
@@ -188,10 +210,32 @@ export const markNotificationAsRead = async (leadId) => {
   try {
     const getResult = await dynamoDB.get(getParams).promise();
     const lead = getResult.Item;
-    
+
     if (!lead) {
-      console.error(`DynamoNotification: Lead ${leadId} not found`);
-      throw new Error(`Lead ${leadId} not found`);
+      // Fall back to the notifications table — workspace/calendar
+      // notifications are keyed by notificationId, not leadId.
+      const notifGet = await dynamoDB.get({
+        TableName: NOTIFICATIONS_TABLE,
+        Key: { notificationId: leadId }
+      }).promise();
+
+      if (!notifGet.Item) {
+        console.error(`DynamoNotification: Notification ${leadId} not found in leads or notifications`);
+        throw new Error(`Lead ${leadId} not found`);
+      }
+
+      const updated = await dynamoDB.update({
+        TableName: NOTIFICATIONS_TABLE,
+        Key: { notificationId: leadId },
+        UpdateExpression: 'set isRead = :isRead, updatedAt = :updatedAt',
+        ExpressionAttributeValues: {
+          ':isRead': true,
+          ':updatedAt': new Date().toISOString()
+        },
+        ReturnValues: 'ALL_NEW'
+      }).promise();
+
+      return { ...updated.Attributes, _id: updated.Attributes.notificationId };
     }
     
     console.log(`DynamoNotification: Current lead status: ${lead.status}`);
@@ -305,11 +349,20 @@ export const markAllNotificationsAsRead = async (userId, userType = 'vendor') =>
     
     console.log(`DynamoNotification: Found ${unreadLeads.length} unread leads`);
     
+    // Also collect unread records from the notifications table
+    // (workspace/calendar reminders etc.)
+    const notifScan = await dynamoDB.scan({
+      TableName: NOTIFICATIONS_TABLE,
+      FilterExpression: 'userId = :uid AND isRead = :unread',
+      ExpressionAttributeValues: { ':uid': userId, ':unread': false }
+    }).promise();
+    const unreadNotifs = notifScan.Items || [];
+
     // If there are no unread leads, return early
-    if (unreadLeads.length === 0) {
+    if (unreadLeads.length === 0 && unreadNotifs.length === 0) {
       return { count: 0 };
     }
-    
+
     // Update each lead to mark it as read (status = "viewed")
     const updatePromises = unreadLeads.map(lead => {
       const updateParams = {
@@ -332,8 +385,23 @@ export const markAllNotificationsAsRead = async (userId, userType = 'vendor') =>
     
     console.log(`DynamoNotification: Updating ${updatePromises.length} leads to status "viewed"`);
     await Promise.all(updatePromises);
-    
-    return { count: unreadLeads.length };
+
+    // Mark notifications-table records as read too
+    await Promise.all(
+      unreadNotifs.map((n) =>
+        dynamoDB.update({
+          TableName: NOTIFICATIONS_TABLE,
+          Key: { notificationId: n.notificationId },
+          UpdateExpression: 'set isRead = :isRead, updatedAt = :updatedAt',
+          ExpressionAttributeValues: {
+            ':isRead': true,
+            ':updatedAt': new Date().toISOString()
+          }
+        }).promise()
+      )
+    );
+
+    return { count: unreadLeads.length + unreadNotifs.length };
   } catch (error) {
     console.error('Error marking all leads as read:', error);
     throw error;

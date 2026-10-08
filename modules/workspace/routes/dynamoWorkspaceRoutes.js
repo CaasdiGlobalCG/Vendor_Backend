@@ -8,6 +8,8 @@ import { authenticateCognitoJwt } from '../../../middleware/cognitoJwtMiddleware
 import { attachVendorId } from '../../../middleware/attachVendorId.js';
 import { attachRBAC } from '../../rbac/middleware/attachRBAC.js';
 import { requirePermission } from '../../rbac/middleware/requirePermission.js';
+import aiConfig from '../../ai/config/aiConfig.js';
+import { ChatBedrockConverse } from '@langchain/aws';
 
 const router = express.Router();
 
@@ -220,7 +222,7 @@ router.post('/workspace/comments/mention', requirePermission('workspace', 'view'
 // client) — e.g. approval requests, approval results, deletion requests.
 router.post('/workspaces/:id/notify', requirePermission('workspace', 'view'), async (req, res) => {
   try {
-    const { roles = ['pm', 'vendor', 'client'], excludeUserId, notification = {} } = req.body;
+    const { roles = ['pm', 'vendor', 'client'], excludeUserId, notification = {}, targetUserIds = [] } = req.body;
     const workspaceId = req.params.id;
 
     const workspaceModel = await import('../models/DynamoWorkspace.js');
@@ -241,6 +243,10 @@ router.post('/workspaces/:id/notify', requirePermission('workspace', 'view'), as
         if (id && id !== clientId && id !== owner) userIds.add(id);
       });
     }
+    // Explicit per-user targets (e.g. calendar "selected people" visibility)
+    (Array.isArray(targetUserIds) ? targetUserIds : []).forEach((id) => {
+      if (id) userIds.add(id);
+    });
     if (excludeUserId) userIds.delete(excludeUserId);
 
     const { sendNotificationToUser } = await import('../../../websocket/notificationSocket.js');
@@ -289,6 +295,101 @@ router.post('/workspaces/:id/notify', requirePermission('workspace', 'view'), as
   } catch (error) {
     console.error('Error sending workspace notifications:', error);
     res.status(500).json({ success: false, message: 'Failed to send notifications' });
+  }
+});
+
+// ---------------------------------------------------------------
+// AI canvas assist — Smart Note actions + AI Helper node.
+// Mounted via router.use('/workspace', authChain) so it's already
+// authenticated (Cognito or external PM/CAS session).
+// Uses AWS Bedrock Nova (same provider as the AI chat module).
+// ---------------------------------------------------------------
+const AI_ACTION_PROMPTS = {
+  summarize: (prompt) => ({
+    system:
+      'You are a concise assistant inside a project workspace. Summarize the given note in 2-5 short bullet points. Return only the summary text, no preamble.',
+    user: prompt,
+    json: false,
+  }),
+  extract: (prompt) => ({
+    system:
+      'Extract key information from the workspace note. Reply with ONLY a JSON object (no markdown fences) shaped: {"dates":[],"people":[],"amounts":[],"actionItems":[]}. Keep each entry under 12 words.',
+    user: prompt,
+    json: true,
+  }),
+  suggest: (_prompt, context) => ({
+    system:
+      `You suggest next steps for a workspace canvas that currently has ` +
+      `${context?.edgeCount || 0} connections and elements: ` +
+      `${(context?.nodeNames || []).join(', ') || 'none'}. ` +
+      `Task: ${context?.taskName || 'general'}${context?.subtaskName ? ` / ${context.subtaskName}` : ''}. ` +
+      'Give 3-5 short actionable suggestions, one per line.',
+    user: 'Suggest next steps.',
+    json: false,
+  }),
+  generate: (prompt) => ({
+    system:
+      'You generate workspace canvas flows from a request. Return a compact text plan: numbered steps, each naming an element type (form, table, chart, task-card, approval-board, smart-note) and its purpose.',
+    user: prompt,
+    json: false,
+  }),
+  ask: (prompt) => ({
+    system:
+      'You are an assistant inside a construction project workspace. The user prompt starts with a serialized description of the canvas elements, followed by "Question:" and their question. Answer concisely from the context. If the answer is not in the context, say so plainly.',
+    user: prompt,
+    json: false,
+  }),
+  materialSpec: (prompt) => ({
+    system:
+      'You generate a technical material specification sheet for construction/procurement. Reply with ONLY a JSON object (no markdown fences) shaped: {"name":"","category":"","grade":"","standard":"","unit":"","specs":[{"key":"","value":""}]}. specs: 5-8 typical required properties; each value is a required spec like "\u2265 3.5" or "Zone II" or "600 \u00d7 600". Cite the relevant Indian IS standard(s) in "standard" where applicable.',
+    user: prompt,
+    json: true,
+  }),
+};
+
+router.post('/workspace/ai/assist', async (req, res) => {
+  try {
+    const { action, prompt = '', context } = req.body || {};
+    const builder = AI_ACTION_PROMPTS[action];
+    if (!builder) {
+      return res.status(400).json({ success: false, message: `Unknown action: ${action}` });
+    }
+    if (!prompt?.trim() && (action === 'summarize' || action === 'extract' || action === 'generate' || action === 'ask' || action === 'materialSpec')) {
+      return res.status(400).json({ success: false, message: 'prompt is required' });
+    }
+
+    const spec = builder(prompt.trim(), context);
+    const llm = new ChatBedrockConverse({
+      model: aiConfig.bedrock.model,
+      region: aiConfig.bedrock.region,
+      temperature: 0.3,
+      maxTokens: 800,
+      maxRetries: 2,
+    });
+
+    const aiResp = await llm.invoke([
+      ['system', spec.system],
+      ['user', spec.user],
+    ]);
+    const text = (
+      typeof aiResp.content === 'string'
+        ? aiResp.content
+        : (aiResp.content || []).map((c) => c?.text || '').join('')
+    ).trim();
+
+    let data;
+    if (spec.json && text) {
+      try {
+        data = JSON.parse(text.replace(/```json|```/g, '').trim());
+      } catch {
+        console.warn('AI assist: failed to parse JSON response:', text);
+      }
+    }
+
+    res.json({ success: true, text, data });
+  } catch (error) {
+    console.error('AI assist error:', error);
+    res.status(500).json({ success: false, message: 'AI assist failed' });
   }
 });
 
