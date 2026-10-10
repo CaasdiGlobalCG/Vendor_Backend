@@ -4,6 +4,7 @@ import { dynamoDB, WORKSPACES_TABLE } from '../../../config/aws.js';
 import { notifyVendorOfNewLead } from '../../../websocket/notificationSocket.js';
 import { canAccessProject, canAccessWorkspace } from '../../rbac/utils/scopeAccess.utils.js';
 import * as WorkflowScheduler from '../../workflow/services/workflowScheduler.js';
+import { preserveHiddenNodes, redactWorkspaceForRole } from '../utils/nodeVisibility.js';
 import { uploadFileToS3 } from '../../../utils/s3Utils.js';
 
 // Persist a per-day canvas snapshot (JPEG data URL from the client) to S3 and
@@ -144,7 +145,9 @@ export const getWorkspaceById = async (req, res) => {
       return res.status(403).json({ message: 'Access denied for this workspace' });
     }
     
-    res.status(200).json(workspace);
+    // Audience filtering is enforced here, not in the UI: a node restricted to
+    // other roles must never reach this viewer's payload.
+    res.status(200).json(redactWorkspaceForRole(workspace, req.user?.role));
   } catch (error) {
     console.error('Error getting workspace by ID:', error);
     res.status(500).json({ message: 'Failed to get workspace', error: error.message });
@@ -161,7 +164,7 @@ export const getWorkspaceByLeadId = async (req, res) => {
       return res.status(404).json({ message: 'Workspace not found for this lead' });
     }
     
-    res.status(200).json(workspace);
+    res.status(200).json(redactWorkspaceForRole(workspace, req.user?.role));
   } catch (error) {
     console.error('Error getting workspace by lead ID:', error);
     res.status(500).json({ message: 'Failed to get workspace', error: error.message });
@@ -192,7 +195,7 @@ export const getWorkspaceByProjectId = async (req, res) => {
     }
     // Return workspace with normalized status field
     const responseWorkspace = { ...workspace, status: normalizedStatus };
-    res.status(200).json(responseWorkspace);
+    res.status(200).json(redactWorkspaceForRole(responseWorkspace, req.user?.role));
   } catch (error) {
     console.error('Error getting workspace by project ID:', error);
     res.status(500).json({ message: 'Failed to get workspace', error: error.message });
@@ -211,7 +214,9 @@ export const getWorkspacesByVendorId = async (req, res) => {
     const scopedWorkspaces = workspaces.filter((workspace) =>
       canAccessWorkspace(req.rbac, workspace.workspaceId || workspace.id, workspace.projectId)
     );
-    res.status(200).json(scopedWorkspaces);
+    res.status(200).json(
+      scopedWorkspaces.map((workspace) => redactWorkspaceForRole(workspace, req.user?.role))
+    );
   } catch (error) {
     console.error('Error getting workspaces by vendor ID:', error);
     res.status(500).json({ message: 'Failed to get workspaces', error: error.message });
@@ -338,8 +343,12 @@ export const saveWorkspaceCanvas = async (req, res) => {
 
     const workflowEvents = buildCanvasWorkflowEvents(id, existingWorkspace.nodes || [], nodes || []);
 
+    // A viewer who cannot see a node never received it, so their payload omits
+    // it. Re-add those nodes here — otherwise saving would delete them.
+    const mergedNodes = preserveHiddenNodes(existingWorkspace.nodes || [], nodes || [], req.user?.role);
+
     const workspaceData = {
-      nodes: nodes || [],
+      nodes: mergedNodes,
       edges: edges || [],
       layers: layers || [],
       zoomLevel: zoomLevel || 100,
@@ -840,7 +849,9 @@ export const updateSubtaskCanvas = async (req, res) => {
     const existingNodesById = new Map(existingNodes.filter(n => n && n.id).map(n => [n.id, n]));
 
     const incomingNodes = Array.isArray(nodes) ? nodes : [];
-    const mergedNodes = incomingNodes.map((n) => mergeNodeData(existingNodesById.get(n?.id), n));
+    // Nodes this writer cannot see were never sent to them — keep them.
+    const visibleMergedNodes = incomingNodes.map((n) => mergeNodeData(existingNodesById.get(n?.id), n));
+    const mergedNodes = preserveHiddenNodes(existingNodes, visibleMergedNodes, req.user?.role);
     const workflowEvents = buildCanvasWorkflowEvents(id, existingNodes, mergedNodes);
 
     updatedTasks[taskIndex].subtasks[subtaskIndex].canvasData = {
